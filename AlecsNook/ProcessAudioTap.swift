@@ -30,28 +30,39 @@ enum ProcessAudioTapError: LocalizedError {
 /// Captures the outgoing audio for one Core Audio process object.
 ///
 /// This class deliberately does very little work inside the real-time audio
-/// callback. It calculates one RMS value and dispatches that value elsewhere.
+/// callback. It calculates one RMS value and dispatches that value (and, if
+/// requested, a copy of the underlying samples) elsewhere.
 final class ProcessAudioTap: @unchecked Sendable {
     typealias LevelHandler = @Sendable (Float) -> Void
+    typealias SamplesHandler = @Sendable (UnsafePointer<AudioBufferList>) -> Void
 
     let processObjectIDs: [AudioObjectID]
 
     private let levelHandler: LevelHandler
+    private let samplesHandler: SamplesHandler?
     private let callbackQueue: DispatchQueue
 
     private var tapID: AudioObjectID = kAudioObjectUnknown
     private var aggregateDeviceID: AudioObjectID = kAudioObjectUnknown
     private var ioProcID: AudioDeviceIOProcID?
 
+    /// Sample rate (Hz) of the aggregate device that delivers this tap's
+    /// buffers. Read once at start time from the device's nominal sample
+    /// rate. Callers that need it for downstream analysis (e.g. mapping
+    /// FFT bins to Hz) should read it after `start()` returns.
+    private(set) var sampleRate: Double = 48_000
+
     private let lifecycleLock = NSLock()
     private var started = false
 
     init(
         processObjectIDs: [AudioObjectID],
-        levelHandler: @escaping LevelHandler
+        levelHandler: @escaping LevelHandler,
+        samplesHandler: SamplesHandler? = nil
     ) {
         self.processObjectIDs = processObjectIDs
         self.levelHandler = levelHandler
+        self.samplesHandler = samplesHandler
 
         let identifier = processObjectIDs
             .map(String.init)
@@ -75,6 +86,7 @@ final class ProcessAudioTap: @unchecked Sendable {
             try createProcessTap()
             try createAggregateDevice()
             try createIOProc()
+            readSampleRate()
             try startIO()
 
             started = true
@@ -162,6 +174,46 @@ final class ProcessAudioTap: @unchecked Sendable {
         try check(status, operation: "Create aggregate device")
 
         aggregateDeviceID = newDeviceID
+
+        // Give the IO scheduler more wall-clock time per cycle. The
+        // default aggregate-device buffer is on the order of 10 ms; with
+        // multiple per-process taps running concurrently the HALC proxy
+        // can miss cycles ("skipping cycle due to overload"). 2048
+        // frames at 48 kHz is ~43 ms, leaving plenty of slack.
+        setAggregateBufferSize(
+            aggregateDeviceID,
+            frames: 2_048
+        )
+    }
+
+    private func setAggregateBufferSize(
+        _ deviceID: AudioDeviceID,
+        frames: UInt32
+    ) {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyBufferFrameSize,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var desiredSize = frames
+        let status = AudioObjectSetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            UInt32(MemoryLayout<UInt32>.size),
+            &desiredSize
+        )
+
+        // Best-effort: not all aggregate devices accept buffer-size
+        // overrides, and we don't want to fail tap creation over it.
+        if status != noErr {
+            NSLog(
+                "ProcessAudioTap: failed to set aggregate buffer size "
+                + "(\(status)); using default"
+            )
+        }
     }
 
     private func readTapUID(
@@ -211,11 +263,39 @@ final class ProcessAudioTap: @unchecked Sendable {
             )
 
             self.levelHandler(level)
+
+            if let samplesHandler = self.samplesHandler {
+                samplesHandler(inputData)
+            }
         }
 
         try check(status, operation: "Create IO callback")
 
         ioProcID = newIOProcID
+    }
+
+    private func readSampleRate() {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var rate: Float64 = 0
+        var size = UInt32(MemoryLayout<Float64>.size)
+
+        let status = AudioObjectGetPropertyData(
+            aggregateDeviceID,
+            &address,
+            0,
+            nil,
+            &size,
+            &rate
+        )
+
+        if status == noErr, rate > 0 {
+            sampleRate = rate
+        }
     }
 
     private func startIO() throws {

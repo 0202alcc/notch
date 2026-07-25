@@ -74,8 +74,27 @@ struct ActiveAudioSourcesView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Playing Audio")
-                .font(.headline)
+            HStack(spacing: 12) {
+                Text("Playing Audio")
+                    .font(.headline)
+
+                Spacer()
+
+                Picker(
+                    "Waveform style",
+                    selection: $monitor.waveformStyle
+                ) {
+                    Image(systemName: "waveform")
+                        .tag(WaveformStyle.timeDomain)
+                        .help("Time-domain bars")
+                    Image(systemName: "chart.bar.fill")
+                        .tag(WaveformStyle.frequencyDomain)
+                        .help("Frequency-domain (STFT)")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+            }
 
             if monitor.activeSources.isEmpty {
                 HStack(spacing: 8) {
@@ -102,6 +121,9 @@ struct ActiveAudioSourcesView: View {
 }
 
 struct AudioSourceRow: View {
+    @ObservedObject private var monitor =
+        ApplicationAudioMonitor.shared
+
     @ObservedObject var source: ApplicationAudioSourceModel
 
     var body: some View {
@@ -121,9 +143,16 @@ struct AudioSourceRow: View {
 
             Spacer()
 
-            MiniAudioWaveform(
-                levels: source.waveform
-            )
+            switch monitor.waveformStyle {
+            case .timeDomain:
+                MiniAudioWaveform(
+                    levels: source.waveform
+                )
+            case .frequencyDomain:
+                MiniAudioSpectrum(
+                    spectrum: source.spectrum
+                )
+            }
         }
     }
 }
@@ -163,7 +192,40 @@ struct MiniAudioWaveform: View {
     }
 }
 
+/// Compact magnitude spectrum (STFT output) rendered as a row of bars.
+///
+/// Each entry in `spectrum` is a smoothed, log-spaced magnitude bin in
+/// roughly `0...1`. The number of bars is determined by the array length.
+struct MiniAudioSpectrum: View {
+    let spectrum: [Float]
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 0.5) {
+            ForEach(Array(spectrum.enumerated()), id: \.offset) {
+                _, rawMagnitude in
+                let magnitude = CGFloat(
+                    min(max(rawMagnitude, 0), 1)
+                )
+
+                Capsule()
+                    .frame(
+                        width: 2,
+                        height: max(2, 16 * magnitude)
+                    )
+            }
+        }
+        .frame(width: 26, height: 18)
+        .animation(
+            .linear(duration: 0.06),
+            value: spectrum
+        )
+    }
+}
+
 struct CombinedAudioWaveform: View {
+    @ObservedObject private var monitor =
+        ApplicationAudioMonitor.shared
+
     @ObservedObject var source: CombinedAudioSourceModel
 
     private var isActive: Bool {
@@ -171,9 +233,14 @@ struct CombinedAudioWaveform: View {
     }
 
     var body: some View {
-        MiniAudioWaveform(
-            levels: source.waveform
-        )
+        Group {
+            switch monitor.waveformStyle {
+            case .timeDomain:
+                MiniAudioWaveform(levels: source.waveform)
+            case .frequencyDomain:
+                MiniAudioSpectrum(spectrum: source.spectrum)
+            }
+        }
         .opacity(isActive ? 1 : 0)
         .frame(
             width: isActive ? 26 : 0,
@@ -206,6 +273,7 @@ struct CompactOutputStatusView: View {
             }
         }
         .fixedSize()
+        .padding(.trailing, 4)
         .frame(height: 24)
     }
 }
@@ -252,15 +320,7 @@ configuration.topBar.leadingTitle = { _ in "" }
 
 configuration.branding = NookHostBranding(
     hostName: "MyNook",
-    hostTagline: "Custom notch controls",
-    mark: { size, color in
-        AnyView(
-            ExpandedOutputStatusView(
-                iconSize: size,
-                activeColor: color
-            )
-        )
-    }
+    hostTagline: "Custom notch controls"
 )
 
 // Expanded top-right

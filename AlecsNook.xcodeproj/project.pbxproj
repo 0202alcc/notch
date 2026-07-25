@@ -117,7 +117,7 @@
 			mainGroup = 0ACB7AB4300DA20800C8171B;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				0ACB7ACF300DA25A00C8171B /* XCRemoteSwiftPackageReference "opennook" */,
+				0ACB7ACF300DA25A00C8171B /* XCLocalSwiftPackageReference "Packages/opennook" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 0ACB7ABE300DA20800C8171B /* Products */;
@@ -349,26 +349,22 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		0ACB7ACF300DA25A00C8171B /* XCRemoteSwiftPackageReference "opennook" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/athledev-labs/opennook.git";
-			requirement = {
-				branch = main;
-				kind = branch;
-			};
+/* Begin XCLocalSwiftPackageReference section */
+		0ACB7ACF300DA25A00C8171B /* XCLocalSwiftPackageReference "Packages/opennook" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/opennook;
 		};
-/* End XCRemoteSwiftPackageReference section */
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		0ACB7AD0300DA25A00C8171B /* NookApp */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 0ACB7ACF300DA25A00C8171B /* XCRemoteSwiftPackageReference "opennook" */;
+			package = 0ACB7ACF300DA25A00C8171B /* XCLocalSwiftPackageReference "Packages/opennook" */;
 			productName = NookApp;
 		};
 		0ACB7AD2300DA25A00C8171B /* NookComponents */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 0ACB7ACF300DA25A00C8171B /* XCRemoteSwiftPackageReference "opennook" */;
+			package = 0ACB7ACF300DA25A00C8171B /* XCLocalSwiftPackageReference "Packages/opennook" */;
 			productName = NookComponents;
 		};
 /* End XCSwiftPackageProductDependency section */

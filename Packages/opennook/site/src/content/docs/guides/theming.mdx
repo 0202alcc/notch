@@ -1,0 +1,301 @@
+---
+title: Theming
+description: Supply a palette resolver, read it from views, and persist appearance.
+---
+
+The nook's chrome - top bar, compact pill, Settings - is painted from a
+`NookResolvedTheme`. The framework resolves one on every layout pass from the
+current `AppState`, hands it to your views through the
+`\.nookResolvedTheme` environment value, and persists user-facing appearance
+choices to `UserDefaults` between launches.
+
+You can leave all of this alone (the default looks like the demo), tint chrome
+labels with a host-supplied palette, or swap surface materials and the chrome
+palette through `NookAppearancePreferences`.
+
+## When to use which knob
+
+- **Custom palette colors.** Set `NookConfiguration.theme` to a closure that
+  returns your own `NookResolvedTheme`. This is the right level for a host
+  product that wants a distinct chrome tint.
+- **Light/dark/follow-system, solid/translucent surface, notch-fused vs
+  free-floating.** These are user-facing preferences. They live on
+  `AppState.appearancePreferences` and ship with a Settings UI - usually you
+  don't override them; you just read the resolved values back.
+- **Just read theme colors in your view.** Pull
+  `@Environment(\.nookResolvedTheme)` and use the named slots. Don't reach for
+  `Color.primary` or `Color.secondary` on the notch panel - see the pitfall
+  below.
+
+## The resolved theme
+
+`NookResolvedTheme` is a flat `Sendable` struct of named color slots. Every
+chrome view reads from these slots, so a host palette only needs to fill them
+in once:
+
+```swift
+public struct NookResolvedTheme: Sendable {
+    public var primaryLabel: Color
+    public var secondaryLabel: Color
+    public var tertiaryLabel: Color
+    public var quaternaryLabel: Color
+    public var subtleFill: Color
+    public var subtleStroke: Color
+    public var headerInactiveIcon: Color
+    public var accent: Color          // interactive tint; defaults to the system accent
+    public var fontDesign: Font.Design // chrome typography; defaults to .default
+}
+```
+
+`accent` and `fontDesign` default to the macOS system accent and `.default`, so
+a palette can set only the label/fill slots and still paint a sensible chrome -
+pass them when you want to brand it.
+
+Read it in a view with the SwiftUI environment:
+
+```swift
+struct MyHomeView: View {
+    @Environment(\.nookResolvedTheme) private var theme
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Image(systemName: "sparkles")
+                .foregroundStyle(theme.secondaryLabel)
+            Text("Hello")
+                .foregroundStyle(theme.primaryLabel)
+        }
+    }
+}
+```
+
+The default resolver, `NookResolvedTheme.live(appState:)`, derives the palette
+from the user's appearance preferences, the application's effective
+appearance, and macOS's Reduce Transparency setting. Replace it with your own
+closure on `NookConfiguration.theme`:
+
+```swift
+var configuration = NookConfiguration()
+configuration.theme = { appState in MyPalette.resolve(appState) }
+NookApp.main(configuration)
+```
+
+## A complete host palette
+
+Build your colors explicitly - black or white at a fixed opacity - rather than
+from system-adaptive colors like `Color.primary`. This is the most common
+pitfall on the notch panel; see [Use explicit colors, not adaptive
+ones](#use-explicit-colors-not-adaptive-ones) below.
+
+```swift
+import NookApp
+import SwiftUI
+
+enum SunsetTheme {
+    @MainActor
+    static func resolve(_ appState: AppState) -> NookResolvedTheme {
+        NookResolvedTheme(
+            primaryLabel:    Color(red: 1.0, green: 0.93, blue: 0.86),
+            secondaryLabel:  Color(red: 1.0, green: 0.78, blue: 0.62).opacity(0.85),
+            tertiaryLabel:   Color(red: 1.0, green: 0.66, blue: 0.50).opacity(0.70),
+            quaternaryLabel: Color(red: 1.0, green: 0.62, blue: 0.46).opacity(0.50),
+            subtleFill:      Color.white.opacity(0.08),
+            subtleStroke:    Color.white.opacity(0.16),
+            headerInactiveIcon: Color(red: 1.0, green: 0.70, blue: 0.55).opacity(0.55)
+        )
+    }
+}
+
+var configuration = NookConfiguration()
+configuration.setHome { ThemedHomeView() }
+configuration.theme = { SunsetTheme.resolve($0) }
+NookApp.main(configuration)
+```
+
+The closure is `@Sendable @MainActor (AppState) -> NookResolvedTheme`, so it
+runs on the main actor during view rendering and is free to touch main-actor
+state on `AppState`. Resolving against `AppState` lets the palette react to
+user preferences if you want it to - for example, picking different tints for
+light vs dark chrome.
+
+The full working example is at `Examples/ThemedNook/main.swift`.
+
+## Accent and font design
+
+The chrome's interactive controls - the keep-open lock, the gear, focus rings,
+the surface `.tint`, and peripheral feedback cues - draw from `theme.accent`.
+It defaults to the macOS system accent (`controlAccentColor`), so out of the box
+the chrome matches the user's system. Set it in your palette to make those
+controls track your brand color instead:
+
+```swift
+NookResolvedTheme(
+    primaryLabel: ..., secondaryLabel: ..., tertiaryLabel: ...,
+    quaternaryLabel: ..., subtleFill: ..., subtleStroke: ...,
+    headerInactiveIcon: ...,
+    accent: Color(red: 1.0, green: 0.45, blue: 0.2), // sunset orange
+    fontDesign: .rounded
+)
+```
+
+`fontDesign` restyles the chrome's own typography (top bar, compact pill, the
+default home placeholder) - pass `.rounded`, `.serif`, or `.monospaced`. Content
+you register supplies its own fonts.
+
+## Chrome shape, animation, and width
+
+Three surface-level knobs live on `NookConfiguration` (each `nil` by default,
+meaning "use the framework's value"):
+
+```swift
+var configuration = NookConfiguration()
+
+// Corner radii: the rounding into the notch arch and where the panel meets the
+// wallpaper. See NookStyle.
+configuration.style = NookStyle(topCornerRadius: 14, bottomCornerRadius: 28)
+
+// Tighten the safe-area strip the chrome reserves around expanded content. The
+// default is 0 on top and 8 elsewhere; dropping `bottom` lets content sit closer
+// to the rounded bottom. Centered content (e.g. a command row) stays clear of the
+// corners; content pinned into a bottom corner should still inset by the published
+// `nookContentInsets.bottom` to clear the curve.
+configuration.style = NookStyle(
+    topCornerRadius: 15,
+    bottomCornerRadius: 20,
+    expandedContentInsets: NookEdgeInsets(top: 0, bottom: 2, leading: 8, trailing: 8)
+)
+
+// Expand / collapse / convert animation curves. If you slow these down, also
+// set `animationDuration` so awaited expand()/compact() return once the chrome
+// has visibly arrived.
+configuration.transitions = NookTransitionConfiguration(
+    openingAnimation: .spring(response: 0.6, dampingFraction: 0.8),
+    animationDuration: 0.6
+)
+
+// Fixed expanded width (the chrome is content-driven; this just pins a stable
+// width so the panel doesn't resize between home and Settings).
+configuration.expandedWidth = 600
+
+NookApp.main(configuration)
+```
+
+For how `expandedWidth`, `expandedContentInsets`, `metrics.edgePadding`, and
+`nookContentInsets` compose into usable content width - and how to avoid
+double horizontal padding on the home view - see
+[Layout and content insets](/guides/layout-and-insets/) and
+`Examples/LayoutNook/main.swift`.
+
+## Custom Settings surface
+
+The gear opens the framework's built-in Settings screen. To replace it with
+your own, register a Settings view - it stays reachable via the gear as long as
+`topBar.showsSettings` is on, and reads `AppState` from the environment:
+
+```swift
+configuration.setSettings { MyProductSettingsView() }
+```
+
+Leave it unset to keep the built-in Settings UI; set
+`topBar.showsSettings = false` to drop the Settings screen entirely.
+
+## User-facing appearance preferences
+
+`NookAppearancePreferences` carries the user-configurable surface and chrome
+state. The framework owns the Settings panel that writes it; your code reads
+from it.
+
+```swift
+public struct NookAppearancePreferences: Equatable, Codable, Sendable {
+    public var chromePalette: NookChromePalette   // .followSystem / .dark / .light
+    public var surfaceStyle: NookSurfaceStyle     // .solid / .translucent / .liquidGlass
+    public var presentation: NookPresentation     // .auto / fused / free-floating
+    public var hapticFeedbackEnabled: Bool
+    public var keepNookOpen: Bool
+}
+```
+
+- `chromePalette` pins the chrome to dark / light or follows macOS.
+- `surfaceStyle` picks a solid panel that matches the menu-bar notch (the
+  default), a translucent material that lets the wallpaper through, or Liquid
+  Glass - see [Surface materials](/guides/surface-materials/).
+- `presentation` is `.auto` by default and is the knob that makes the chrome
+  work on a Mac with no notch.
+
+A host that just wants to read the user's current choices can do so directly:
+
+```swift
+configuration.theme = { appState in
+    switch appState.appearancePreferences.surfaceStyle {
+    case .solid:       return SolidPalette.resolve(appState)
+    case .translucent: return FrostPalette.resolve(appState)
+    case .liquidGlass: return GlassPalette.resolve(appState)
+    }
+}
+```
+
+If you need to write preferences programmatically (rare - the Settings UI is
+usually enough), go through `AppState.replaceAppearancePreferences(_:)` so
+the change is persisted:
+
+```swift
+var prefs = appState.appearancePreferences
+prefs.chromePalette = .dark
+appState.replaceAppearancePreferences(prefs)
+```
+
+Direct assignment to `appState.appearancePreferences` updates the in-memory
+state but **skips persistence** - the next launch will start from whatever was
+last persisted.
+
+## Persistence
+
+Appearance preferences are encoded as JSON and stored in
+`UserDefaults.standard` under the key `opennook.appearance.v1`.
+`AppState.init` loads from there on launch; `replaceAppearancePreferences`
+writes back through `NookAppearanceStore.save`. Failed encode/decodes fall
+back to defaults silently rather than wiping the record - decoding is
+forward-compatible too, so a JSON record from an older build that is missing
+later-added fields still round-trips correctly.
+
+You don't need to do anything to get persistence - it is on by default for
+every host that uses the built-in Settings UI.
+
+## Pitfalls
+
+### Use explicit colors, not adaptive ones
+
+`Color.primary`, `Color.secondary`, and the SwiftUI semantic colors are
+*system-adaptive*: they read the current `colorScheme` and resolve light or
+dark accordingly. The nook lives on a non-activating panel whose SwiftUI
+`colorScheme` is unreliable, so an adaptive color can resolve for the wrong
+appearance - white text rendering on a white light-mode panel, for example.
+
+Resolve the appearance once when building your `NookResolvedTheme` and emit
+concrete `Color.white.opacity(...)` / `Color.black.opacity(...)` values. The
+framework's own palette does exactly this; see `NookResolvedTheme.resolve` in
+`Sources/NookKit/App/NookResolvedTheme.swift` for the reference implementation.
+
+### Don't write `appearancePreferences` directly
+
+Assigning to `appState.appearancePreferences` looks like it works - the
+chrome updates - but the change is not persisted, so it vanishes on the next
+launch. Always go through `replaceAppearancePreferences(_:)`.
+
+### Reduce Transparency
+
+The default resolver bumps `subtleFill` slightly when the user has Reduce
+Transparency enabled or the surface is forced to solid. If you ship a custom
+palette and care about that case, branch on
+`NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency` when
+resolving.
+
+## See also
+
+- `Examples/LayoutNook/main.swift` - expanded width, trimmed insets, and
+  `nookContentInsets` in a host home view.
+- `Examples/ThemedNook/main.swift` - the working palette + lifecycle hooks
+  example this guide mirrors.
+- [Settings chrome](/guides/settings-chrome/) - configures the top bar
+  identity that consumes the same theme.
+- `Sources/NookKit/App/NookResolvedTheme.swift` - the type's source of truth
+  including the live resolver.

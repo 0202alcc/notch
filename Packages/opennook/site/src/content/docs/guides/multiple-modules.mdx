@@ -1,0 +1,434 @@
+---
+title: Multiple modules
+description: Run several interchangeable notch apps on one surface.
+---
+
+A single host can run several interchangeable *modules* - independent notch
+apps sharing one surface, one menu bar, and one set of preferences. Each
+module ships its own `NookConfiguration`, its own services, and an optional
+global shortcut for direct-jump or cycle-through. Use this when the notch
+should host distinct surfaces (a clock, a counter, a notepad) that the user
+flips between rather than nesting inside one home view.
+
+## When to use modules
+
+- **Multiple distinct surfaces.** A clock view, a clipboard view, a notepad -
+  each with its own content and lifecycle - not screens nested under one
+  home view.
+- **You want isolated persistence and services.** Two modules in the same host
+  should never collide on `UserDefaults` keys or service instances. The
+  framework gives each module its own context (see below).
+- **You want to switch at runtime.** Registering modules gives you switching
+  for free: a "Modules" section in the menu-bar item, an optional cycle hotkey,
+  and per-module direct-jump hotkeys. By default nothing is planted in the
+  expanded surface - it stays entirely the module's own. Opt into a compact
+  in-surface switcher with `moduleSwitcherPlacement` (see below).
+
+If you only have one notch app, stick with `NookConfiguration` and
+`NookApp.main(_:)`. `NookHostConfiguration` traps if you build it empty - it
+is the multi-module entry point and is meaningless with zero registrations.
+
+## Minimal setup
+
+```swift
+import NookApp
+
+var host = NookHostConfiguration()
+
+// A NookModule type that builds its own configuration and services.
+host.register(CounterModule.moduleDescriptor) { context in
+  CounterModule(context: context)
+}
+
+// Or just register a configuration closure for the simpler cases.
+host.register(
+  NookModuleDescriptor(id: "com.example.clock", displayName: "Clock", icon: "clock"),
+  configuration: { clockConfiguration() }
+)
+
+host.defaultModule = CounterModule.moduleDescriptor.id
+host.moduleCycleHotkey = NookHotkey(keyCode: 50, carbonModifiers: 4096 | 2048, keySymbol: "`")
+
+NookApp.main(host)
+```
+
+`defaultModule` is the module shown at launch. When unset, the first
+registered module wins. `moduleCycleHotkey` adds a global shortcut that
+advances to the next module in registration order.
+
+## Where the switcher appears
+
+The framework never plants switcher chrome in a module's expanded surface
+uninvited. `host.moduleSwitcherPlacement` decides where the on-screen switch
+affordance lives; switching is always reachable through the cycle and
+per-module hotkeys regardless.
+
+```swift
+host.moduleSwitcherPlacement = .menuBar        // default
+```
+
+- `.menuBar` (default) - a "Modules" section in the menu-bar item lists every
+  module and switches on selection, with a check on the active one. Nothing is
+  added to the expanded surface; it stays entirely the module's own.
+- `.leadingCluster` - a compact switcher folded into the top bar's leading
+  cluster: the active module's name and icon become a popup that lists the
+  others. It replaces the leading title rather than adding a band, so it costs
+  no extra height and never duplicates the active module's identity. Also lists
+  modules in the menu bar.
+- `.none` - no on-screen switcher anywhere. Switching is reachable only through
+  the hotkeys.
+
+## Module drill-in breadcrumb
+
+The switcher names the active *module*; `AppState.moduleBreadcrumb` names where
+the user is *inside* it. When a module drills into a sub-screen - a selected
+deck, an open document, a chosen profile - set `moduleBreadcrumb` to a short
+label and the top bar renders it after the leading title as
+`[icon] Module  >  Breadcrumb`, so the chrome reflects what the user is actually
+looking at instead of the module's static name. Set it back to `nil` to clear.
+
+```swift
+struct DeckList: View {
+    @EnvironmentObject private var appState: AppState
+
+    var body: some View {
+        ForEach(decks) { deck in
+            Button(deck.name) {
+                openDeck(deck)
+                appState.moduleBreadcrumb = deck.name   // drilled in
+            }
+        }
+    }
+}
+```
+
+Pushing a breadcrumb changes one thing in the chrome beyond the label: the
+leading glyph stops being a static module mark and becomes a back control. On
+home with no breadcrumb the title sits next to its icon; once a breadcrumb is
+set the persistent title collapses and the glyph - now a `chevron.left` when the
+module has no leading icon - clears `moduleBreadcrumb` when tapped. The
+framework only clears the property; it does not touch the module's own
+navigation. The module observes the clear and pops its own sub-state:
+
+```swift
+.onChange(of: appState.moduleBreadcrumb) { _, breadcrumb in
+    if breadcrumb == nil {
+        popToRoot()   // the chrome's back tap cleared it; mirror that here
+    }
+}
+```
+
+This is a soft state hint, not a view-mode change. It does not affect
+`AppState.viewMode` or the home/Settings routing - a breadcrumb can be set while
+the home view is showing, and entering Settings takes over the same leading slot
+with its own breadcrumb until the user backs out. The label is constrained to
+the pre-notch region: it is capped at `metrics.breadcrumbMaxWidth` (see
+[Theming](/guides/theming/) for the chrome `metrics` knobs) and fades out at its
+trailing edge rather than overrunning the notch, so a long sub-context label
+never collides with the camera housing. Keep the labels short for that reason.
+
+## Descriptors and modules
+
+A module has two parts: a cheap **descriptor** (the identity the switcher and
+hotkey registration need before construction), and the live **module** (the
+configuration, state, and lifecycle).
+
+```swift
+nonisolated static let moduleDescriptor = NookModuleDescriptor(
+    id: "com.opennook.example.counter",
+    displayName: "Counter",
+    icon: "number",
+    accent: .orange
+)
+```
+
+`id` is the stable, unique identifier. It keys the switcher entry, the
+per-module `UserDefaults` suite, the on-disk container folder, the direct-jump
+hotkey, and the surface arbiter's per-module claim invalidation - so do not
+change it across releases.
+
+A full module conforms to `NookModule`:
+
+```swift
+@MainActor
+final class CounterModule: NookModule {
+    nonisolated static let moduleDescriptor = NookModuleDescriptor(
+        id: "com.opennook.example.counter",
+        displayName: "Counter",
+        icon: "number",
+        accent: .orange
+    )
+
+    let descriptor = CounterModule.moduleDescriptor
+    private let context: NookModuleContext
+
+    init(context: NookModuleContext) {
+        self.context = context
+        let tracker = LaunchTracker.bumping(context.defaults)
+        context.services.register(LaunchTrackerKey.self, tracker)
+    }
+
+    func makeConfiguration() -> NookConfiguration {
+        var configuration = NookConfiguration()
+        configuration.setHome { CounterHome() }
+        configuration.topBar.leadingTitle = { _ in "Counter" }
+        configuration.topBar.leadingIcon = "number"
+        return configuration
+    }
+}
+```
+
+For modules with no extra product state, register a plain `NookConfiguration`
+closure instead - the host wraps it in a `ClosureModule` for you:
+
+```swift
+host.register(descriptor, configuration: { clockConfiguration() })
+```
+
+Registration is cheap; module factories run lazily, only when a module is
+first activated. Registering ten modules pays the construction cost only for
+the ones the user actually opens.
+
+## Per-module persistence: `NookModuleContext`
+
+Every constructed module gets a `NookModuleContext` - its isolated piece of
+the host process:
+
+```swift
+@MainActor
+public final class NookModuleContext {
+    public let descriptor: NookModuleDescriptor
+    public let defaults: UserDefaults     // suite "opennook.module.<id>"
+    public let services: AppServices       // per-module DI bag
+    public let containerURL: URL           // Application Support/<host>/Modules/<id>/
+}
+```
+
+- `defaults` is a private `UserDefaults` suite named `opennook.module.<id>`.
+  Use it instead of `UserDefaults.standard` for anything module-specific so
+  keys cannot collide between modules. Component stores accept it directly:
+  `ShelfStore(defaults: context.defaults)`, for example.
+- `containerURL` is a suggested folder under
+  `Application Support/<host>/Modules/<id>/`. Not created on disk; the module
+  creates it on first use.
+- `services` is a per-module `AppServices` bag (see below).
+
+`NookHostConfiguration.register` traps on a duplicate module id (see the
+pitfall below) precisely so two modules can't silently alias on any of these.
+
+## Service isolation: `ServiceKey` and `AppServices`
+
+`AppServices` is a SwiftUI-environment-style DI container: a module declares
+a key, registers an instance for it on construction, and resolves it back from
+its views. Resolution is total - it never returns `nil`, falling back to the
+key's `defaultValue` instead.
+
+```swift
+final class LaunchTracker: Sendable {
+    let launchCount: Int
+    init(launchCount: Int) { self.launchCount = launchCount }
+    static let unregistered = LaunchTracker(launchCount: 0)
+}
+
+struct LaunchTrackerKey: ServiceKey {
+    static let defaultValue: LaunchTracker = .unregistered
+}
+
+// In the module's init, register against the context's services bag.
+context.services.register(LaunchTrackerKey.self, tracker)
+
+// In any view of that module, resolve through the environment.
+struct CounterHome: View {
+    @Environment(\.appServices) private var services
+    var body: some View {
+        let count = services.resolve(LaunchTrackerKey.self).launchCount
+        Text("Opened \(count) times")
+    }
+}
+```
+
+Each `AppServices` instance is private to the module that owns it. A view in
+module A and a view in module B that look up the same key get different
+results: the value module A registered, and the `defaultValue` for module B.
+This is the seam that keeps modules from accidentally sharing state through a
+process-global container.
+
+Register a key once per construction. The double-register guard traps in
+debug; in release the last writer wins. If you genuinely need to replace a
+service later, use the subscript form (`services[Key.self] = newValue`).
+
+## File pickers from a module
+
+A module that imports or exports files should not roll its own `NSOpenPanel`.
+The host is an agent app (`LSUIElement`) whose only window is a non-activating
+panel, so at the moment a module asks for a file the app is *inactive*: a panel
+presented by an inactive agent comes up non-key, can appear behind the frontmost
+app, and its sidebar stops responding to clicks. The host owns the fix once and
+hands every module a ready picker through services.
+
+`NookFilePicker` is registered into every module's `AppServices` automatically
+when its context is built - alongside the presentation-pinning broker - so you
+never wire it yourself. Resolve it from the `\.appServices` environment via
+`NookFilePickerKey` and call `open` or `save`:
+
+```swift
+struct ImportButton: View {
+    @Environment(\.appServices) private var services
+
+    var body: some View {
+        Button("Import") {
+            let picker = services.resolve(NookFilePickerKey.self)
+            Task {
+                guard let selection = await picker.open(
+                    .init(allowedContentTypes: [.pdf], allowsMultipleSelection: true)
+                ) else { return }
+                selection.withAccess { urls in store.accept(urls) }
+            }
+        }
+    }
+}
+```
+
+Both `open(_:)` and `save(_:)` are `async` and return a `NookFileSelection?` -
+`nil` when the user cancels or a panel is already up (only one panel is
+presented at a time). `open` takes `NookOpenOptions`; `save` takes
+`NookSaveOptions`. The picker does two things a hand-rolled panel cannot:
+
+- **It activates the app before presenting,** so the panel comes up key and
+  interactive even though the click on the notch never activated the agent.
+- **It holds the surface open for the panel's whole lifetime.** A picker is a
+  separate AppKit panel outside the notch window, so while it is up the pointer
+  has left the notch; without a pin the surface would auto-compact and a
+  competing module's arbiter claim could be granted underneath. The picker pins
+  the surface for the panel's lifetime and releases the pin once it closes -
+  the same pin a module's own transient presenter would take.
+
+A panel-returned URL comes back already security-scoped. The `NookFileSelection`
+owns that live access and stops it when the selection is released, so read the
+file's contents - or capture a `.withSecurityScope` bookmark to persist access
+across launches - inside `withAccess(_:)` while the selection is still alive.
+After it is released the URLs are path-level only and reads fail under the
+sandbox.
+
+> **Sandbox caveat.** Under the App Sandbox, the
+> `com.apple.security.files.user-selected.read-write` entitlement is what makes a
+> picked file readable - ship it (the host's entitlements template has it). And
+> under `swift run` the binary is unbundled and unsandboxed with no powerbox, so
+> the panel cannot enter TCC-protected folders (Downloads, Desktop, Documents);
+> run the signed `.app` or grant your terminal Full Disk Access. That is a
+> dev-loop artifact, not a shipping limitation. See [Shipping](/guides/shipping/)
+> for the full entitlement list.
+
+For module tests, register your own `NookFilePresenting` fake against
+`NookFilePickerKey` - `NSOpenPanel` cannot run headless, and the key's default
+value is a deliberately inert picker that traps in debug if it is ever resolved
+without the host registration.
+
+## The module-switch lifecycle
+
+A module switch flips identity inside a single serial transaction, so the
+user sees the incoming module immediately - no half-applied state, no flash of
+the outgoing chrome with the incoming content.
+
+For one switch from A to B, the framework:
+
+1. Calls `A.onDeactivate()` on the outgoing module (synchronous, cheap
+   cleanup).
+2. Calls `B.onActivate()` on the incoming module (the new module is now
+   foreground).
+3. Builds `B`'s `NookConfiguration` from `makeConfiguration()` and re-publishes
+   it to the surface, which re-wires its hooks and runs `onReady` for the new
+   module.
+4. Drops `A`'s instance and context when `A.descriptor.backgroundPolicy` is
+   `.unloadOnSwitchAway` (the default), so the next activation rebuilds it from
+   scratch.
+5. Awaits `A.prepareForSwitchAway()` in a detached follow-on task, bounded by
+   a 2-second timeout. The surface arbiter already treats `A`'s in-flight
+   claims as stale, so this drain runs under the covers without blocking the
+   user-visible switch.
+
+The async seam matters when a module owns a transient surface presenter -
+typically a `NookActivityQueue` (see the [Activity queue
+guide](/guides/activity-queue/)). Implement `prepareForSwitchAway` to drain
+in-flight work and release the surface cleanly:
+
+```swift
+@MainActor
+final class ActivityModule: NookModule {
+    private let queue = NookActivityQueue()
+
+    func prepareForSwitchAway() async {
+        await queue.quiesce()
+    }
+}
+```
+
+`onActivate` and `onDeactivate` stay synchronous - use them for cheap setup
+and teardown (start/stop timers, attach/detach observers). Anything that has
+to *join* in-flight work belongs in `prepareForSwitchAway`.
+
+### Background policy
+
+`NookModuleDescriptor.backgroundPolicy` controls what happens to a module on
+switch-away:
+
+- `.unloadOnSwitchAway` (the default). Tear the module instance down; rebuild
+  it from a fresh context on next activation. Cheapest. Use this for any
+  module that does no background work.
+- `.stayResident`. Keep the instance alive in the background so its services
+  and any owned queues keep running. A backgrounded module can still post
+  activities, but the surface arbiter only grants its claims when their
+  priority is `.urgent` - background modules cannot quietly take over the
+  surface from the foreground one.
+
+## Host branding
+
+The framework chrome - About card, show/hide hotkey label, menu-bar fallback -
+reads identity from `NookHostConfiguration.branding`. A single-module host
+gets the demo defaults (`"Nook"`); a multi-module host usually sets its own:
+
+```swift
+host.branding = NookHostBranding(
+    hostName: "Constellation",
+    hostTagline: "Your workspace, on the notch."
+)
+```
+
+## Pitfalls
+
+### Duplicate module ids trap at registration
+
+`NookHostConfiguration.register` traps on a duplicate id. Two registrations
+under the same id would silently alias on persistence suites, switcher
+entries, hotkey registration, and arbiter claim invalidation - every one of
+those an unrecoverable corruption. Failing fast at `main.swift` setup is the
+intended behavior; don't catch it, fix the id.
+
+### `nonisolated` descriptor, `@MainActor` module
+
+A module class is `@MainActor`, but its descriptor static is referenced from
+the nonisolated top level of `main.swift` (where you assemble the
+`NookHostConfiguration`). Spell the descriptor `nonisolated static let` so
+that reference compiles - the descriptor is an immutable `Sendable` value, so
+this is safe.
+
+### Don't register services against the process-global container
+
+A module's services go in `context.services`, not `UserDefaults.standard` or
+a process-wide singleton. The former is isolated per module; the latter two
+silently alias across modules and undo the isolation guarantee.
+
+### Owning a `NookActivityQueue`? Implement `prepareForSwitchAway`
+
+A module that holds a transient surface presenter must drain it before the
+switch completes, or its dangling surface claim can outlive the switch. See
+the [Activity queue guide](/guides/activity-queue/) for the full pattern.
+
+## See also
+
+- `Examples/MultiNook/main.swift` - the working multi-module host this guide
+  mirrors (full `NookModule` class, closure-registered modules, per-module
+  service injection).
+- [Activity queue](/guides/activity-queue/) - the `prepareForSwitchAway`
+  drain pattern in context.
+- `Sources/NookKit/App/Modules/` - registry, context, descriptor source.

@@ -6,9 +6,90 @@
 //
 
 import AudioToolbox
+import AVFoundation
 import Combine
 import CoreAudio
 import Foundation
+import os
+
+/// Captures the peak amplitude of the default input device so the
+/// microphone-in-use indicator can reflect actual mic activity rather than
+/// the unreliable `kAudioProcessPropertyIsRunningInput` per-process boolean.
+///
+/// When you play music, several Apple audio daemons (and sometimes the music
+/// app itself) report `isRunningInput == true` continuously even though the
+/// microphone is silent - opening an input stream is not the same as
+/// capturing real audio. The definitive signal is the input device's actual
+/// audio level: real recording produces a sustained level above the noise
+/// floor, while a silent open stream does not.
+final class InputLevelMeter {
+    private let peak = OSAllocatedUnfairLock<Float>(initialState: 0)
+    private let engine = AVAudioEngine()
+
+    /// Peak amplitude of the most recent render block (linear, 0...1).
+    /// Thread-safe to read from any context.
+    var peakValue: Float {
+        peak.withLock { $0 }
+    }
+
+    init() {
+        let inputNode = engine.inputNode
+        let format = inputNode.inputFormat(forBus: 0)
+
+        // Install a tap on the input node so we receive every buffer the
+        // microphone produces. The buffer is delivered on a Core Audio
+        // thread, so this closure must not touch any SwiftUI / main-actor
+        // state directly - we just compute the peak and store it.
+        inputNode.installTap(
+            onBus: 0,
+            bufferSize: 1024,
+            format: format
+        ) { [weak self] buffer, _ in
+            self?.process(buffer: buffer)
+        }
+
+        do {
+            try engine.start()
+        } catch {
+            // Engine failed to start (no mic permission, no input device,
+            // sandbox restriction, etc.). Leave the peak at 0 - the mic
+            // indicator will stay off, which is the safe default.
+            NSLog("InputLevelMeter failed to start: \(error)")
+        }
+    }
+
+    deinit {
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+    }
+
+    /// Audio-thread callback. Iterates the samples of the supplied buffer
+    /// and stores the largest absolute value as the latest peak.
+    private func process(buffer: AVAudioPCMBuffer) {
+        guard let channelData = buffer.floatChannelData else {
+            return
+        }
+
+        let frameLength = Int(buffer.frameLength)
+        let channelCount = Int(buffer.format.channelCount)
+
+        var localPeak: Float = 0
+
+        for channel in 0..<channelCount {
+            let samples = channelData[channel]
+            for frame in 0..<frameLength {
+                let value = abs(samples[frame])
+                if value > localPeak {
+                    localPeak = value
+                }
+            }
+        }
+
+        peak.withLock { state in
+            state = localPeak
+        }
+    }
+}
 
 @MainActor
 final class AudioMuteMonitor: ObservableObject {
@@ -19,6 +100,23 @@ final class AudioMuteMonitor: ObservableObject {
     @Published private(set) var isMicrophoneInUse = false
 
     private var timer: Timer?
+
+    // Real input audio level, in linear amplitude (0...1). Drives the mic
+    // indicator in place of the unreliable Core Audio per-process boolean.
+    private let inputLevelMeter = InputLevelMeter()
+
+    // Hysteresis counters for the mic-in-use indicator so brief excursions
+    // above / below the noise floor do not flicker the icon.
+    private var micInUseTrueStreak: Int = 0
+    private var micInUseFalseStreak: Int = 0
+    private let micInUseDebounce: Int = 2
+
+    /// Peak amplitude that counts as "real" mic activity. Below this we treat
+    /// the mic as idle even if a process technically has the input stream
+    /// open (system daemons, the music app holding input for a voice feature,
+    /// etc.). Roughly -46 dBFS - well above electrical noise floor but
+    /// below typical speech.
+    private let micInUseThreshold: Float = 0.005
 
     private init() {
         refresh()
@@ -36,7 +134,35 @@ final class AudioMuteMonitor: ObservableObject {
     func refresh() {
         isSpeakerMuted = Self.readOutputMuteState()
         isMicrophoneMuted = Self.readInputMuteState()
-        isMicrophoneInUse = Self.readMicrophoneUsage()
+        isMicrophoneInUse = updateMicrophoneInUse(
+            peak: inputLevelMeter.peakValue
+        )
+    }
+
+    private func updateMicrophoneInUse(peak: Float) -> Bool {
+        let raw = peak >= micInUseThreshold
+
+        if raw {
+            micInUseTrueStreak += 1
+            micInUseFalseStreak = 0
+        } else {
+            micInUseFalseStreak += 1
+            micInUseTrueStreak = 0
+        }
+
+        // Hold the current value while the raw signal is unstable so a
+        // single-frame excursion does not reach SwiftUI.
+        if raw {
+            if micInUseTrueStreak >= micInUseDebounce {
+                return true
+            }
+        } else {
+            if micInUseFalseStreak >= micInUseDebounce {
+                return false
+            }
+        }
+
+        return isMicrophoneInUse
     }
 
     // MARK: - Output
@@ -102,107 +228,14 @@ final class AudioMuteMonitor: ObservableObject {
     }
 
     // MARK: - Microphone usage
-
-    private static func readMicrophoneUsage() -> Bool {
-        let processes = audioProcessObjects()
-
-        for processID in processes {
-            if processIsUsingInput(processID) {
-                return true
-            }
-        }
-
-        return false
-    }
-
-    private static func audioProcessObjects() -> [AudioObjectID] {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyProcessObjectList,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        let systemObject = AudioObjectID(kAudioObjectSystemObject)
-
-        guard AudioObjectHasProperty(systemObject, &address) else {
-            return []
-        }
-
-        var dataSize: UInt32 = 0
-
-        let sizeStatus = AudioObjectGetPropertyDataSize(
-            systemObject,
-            &address,
-            0,
-            nil,
-            &dataSize
-        )
-
-        guard sizeStatus == noErr else {
-            return []
-        }
-
-        let count = Int(dataSize) / MemoryLayout<AudioObjectID>.size
-
-        guard count > 0 else {
-            return []
-        }
-
-        var processObjects = Array(
-            repeating: AudioObjectID(0),
-            count: count
-        )
-
-        let readStatus = processObjects.withUnsafeMutableBytes { buffer in
-            AudioObjectGetPropertyData(
-                systemObject,
-                &address,
-                0,
-                nil,
-                &dataSize,
-                buffer.baseAddress!
-            )
-        }
-
-        guard readStatus == noErr else {
-            return []
-        }
-
-        return processObjects
-    }
-
-    private static func processIsUsingInput(
-        _ processObject: AudioObjectID
-    ) -> Bool {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioProcessPropertyIsRunningInput,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        guard AudioObjectHasProperty(processObject, &address) else {
-            return false
-        }
-
-        var isRunning: UInt32 = 0
-        var dataSize = UInt32(MemoryLayout<UInt32>.size)
-
-        let status = AudioObjectGetPropertyData(
-            processObject,
-            &address,
-            0,
-            nil,
-            &dataSize,
-            &isRunning
-        )
-
-        guard status == noErr else {
-            return false
-        }
-
-        return isRunning != 0
-    }
-    
+    //
+    // The previous per-process boolean approach (`kAudioProcessPropertyIsRunningInput`)
+    // was unreliable: music playback, system daemons, and various Apple audio
+    // subsystems hold the input stream open continuously and report
+    // `isRunningInput == true` even though the microphone is silent. The
+    // definitive signal is the input device's actual audio level, which is
+    // captured by `InputLevelMeter` above and gated through
+    // `updateMicrophoneInUse(peak:)` in `refresh()`.
     // MARK: - Core Audio helpers
 
     private static func defaultDevice(

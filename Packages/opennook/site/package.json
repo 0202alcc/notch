@@ -1,0 +1,22 @@
+{
+  "name": "opennook-site",
+  "type": "module",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "generate:brand": "node scripts/generate-brand-assets.mjs",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.41.1",
+    "astro": "^7.0.3",
+    "sharp": "^0.35.2"
+  },
+  "overrides": {
+    "esbuild": "^0.28.1"
+  }
+}
