@@ -6,6 +6,7 @@
 //
 
 @preconcurrency import NookApp
+import CoreAudio
 import SwiftUI
 
 struct MyNookView: View {
@@ -72,6 +73,9 @@ struct ActiveAudioSourcesView: View {
     @ObservedObject private var monitor =
         ApplicationAudioMonitor.shared
 
+    @ObservedObject private var outputDevices =
+        OutputDeviceMonitor.shared
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
@@ -79,6 +83,8 @@ struct ActiveAudioSourcesView: View {
                     .font(.headline)
 
                 Spacer()
+
+                OutputDeviceMenu()
 
                 Picker(
                     "Waveform style",
@@ -115,14 +121,148 @@ struct ActiveAudioSourcesView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
+
+            if let error = outputDevices.lastError {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                    Text(error)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Dismiss") {
+                        outputDevices.clearError()
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Compact menu that shows the current output device and lets the user
+/// switch to a different one. All discovery, dedup, and active device
+/// tracking lives in `OutputDeviceMonitor`; this view just renders it.
+struct OutputDeviceMenu: View {
+    @ObservedObject private var outputDevices =
+        OutputDeviceMonitor.shared
+
+    private var currentDeviceName: String {
+        guard
+            let id = outputDevices.currentOutputDeviceID,
+            let device = outputDevices.devices.first(where: {
+                $0.id == id
+            })
+        else {
+            return "Select output"
+        }
+        return device.name
+    }
+
+    var body: some View {
+        Menu {
+            if outputDevices.devices.isEmpty
+                && outputDevices.airplayDevices.isEmpty
+            {
+                Text("No output devices available")
+            } else {
+                if !outputDevices.devices.isEmpty {
+                    Section("Devices") {
+                        ForEach(outputDevices.devices) { device in
+                            outputDeviceButton(device)
+                        }
+                    }
+                }
+
+                if !outputDevices.airplayDevices.isEmpty {
+                    Section("AirPlay") {
+                        ForEach(outputDevices.airplayDevices) { device in
+                            airplayDeviceButton(device)
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "speaker.wave.2")
+                Text(currentDeviceName)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.caption2)
+            }
+            .font(.subheadline)
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.secondary.opacity(0.15))
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help(
+            outputDevices.devices.first(where: {
+                $0.id == outputDevices.currentOutputDeviceID
+            })?.isAvailable == false
+                ? "Currently disconnected"
+                : "Switch output device"
+        )
+    }
+
+    @ViewBuilder
+    private func outputDeviceButton(_ device: OutputDevice) -> some View {
+        Button {
+            if device.isAvailable {
+                outputDevices.setDefaultOutputDevice(device.id)
+            }
+        } label: {
+            if device.id == outputDevices.currentOutputDeviceID {
+                Label(device.name, systemImage: "checkmark")
+            } else if device.isAvailable {
+                Text(device.name)
+            } else {
+                Label(device.name, systemImage: "wifi.exclamationmark")
+            }
+        }
+        .disabled(!device.isAvailable)
+    }
+
+    /// Bonjour-discovered AirPlay receivers. These don't have a
+    /// Core Audio device ID yet (the TV has never been paired with
+    /// this Mac), so the menu entry is informational — selecting it
+    /// does nothing, with a help hint explaining how to actually pair
+    /// the receiver.
+    @ViewBuilder
+    private func airplayDeviceButton(
+        _ device: AirPlayDevice
+    ) -> some View {
+        Label(
+            device.bonjourName,
+            systemImage: device.isResolving
+                ? "airplayaudio"
+                : "airplayaudio"
+        )
+        .help(
+            device.isResolving
+                ? "Resolving \(device.bonjourName) on the network…"
+                : "\(device.bonjourName) is on the network. "
+                + "Pick it in System Settings → Sound to pair it once; "
+                + "it will then appear as a routable device here."
+        )
     }
 }
 
 struct AudioSourceRow: View {
     @ObservedObject private var monitor =
         ApplicationAudioMonitor.shared
+
+    @ObservedObject private var outputDevices =
+        OutputDeviceMonitor.shared
+
+    @ObservedObject private var routes =
+        RouteStore.shared
 
     @ObservedObject var source: ApplicationAudioSourceModel
 
@@ -143,6 +283,8 @@ struct AudioSourceRow: View {
 
             Spacer()
 
+            SourceRouteMenu(source: source)
+
             switch monitor.waveformStyle {
             case .timeDomain:
                 MiniAudioWaveform(
@@ -154,6 +296,146 @@ struct AudioSourceRow: View {
                 )
             }
         }
+    }
+}
+
+/// Compact per-source output-device picker.
+///
+/// Shows the name of the currently-routed device (or "System default"
+/// when the source has no explicit route). The menu lists every
+/// currently-available output device plus "System default" at the
+/// top, plus an "Off / follow system default" entry that disables
+/// replay for this source.
+struct SourceRouteMenu: View {
+    @ObservedObject private var outputDevices =
+        OutputDeviceMonitor.shared
+
+    @ObservedObject private var routes =
+        RouteStore.shared
+
+    let source: ApplicationAudioSourceModel
+
+    private var currentRoute: SourceRoute? {
+        guard let bundleID = source.bundleIdentifier else {
+            return nil
+        }
+        return routes.routes[bundleID]
+    }
+
+    private var currentLabel: String {
+        guard
+            let route = currentRoute,
+            route.enabled,
+            let deviceID = route.outputDeviceID,
+            let device = outputDevices.devices.first(where: {
+                $0.id == deviceID
+            })
+        else {
+            return "System"
+        }
+        return device.name
+    }
+
+    var body: some View {
+        Menu {
+            Button {
+                disableRoute()
+            } label: {
+                Label(
+                    "System default",
+                    systemImage: currentRoute?.enabled != true
+                        ? "checkmark"
+                        : "circle"
+                )
+            }
+
+            Divider()
+
+            if outputDevices.devices.isEmpty {
+                Text("No output devices available")
+            } else {
+                ForEach(outputDevices.devices) { device in
+                    Button {
+                        enableRoute(to: device.id)
+                    } label: {
+                        let active =
+                            currentRoute?.enabled == true
+                            && currentRoute?.outputDeviceID
+                                == device.id
+                        if active {
+                            Label(
+                                device.name,
+                                systemImage: "checkmark"
+                            )
+                        } else if device.isAvailable {
+                            Text(device.name)
+                        } else {
+                            Label(
+                                device.name,
+                                systemImage: "wifi.exclamationmark"
+                            )
+                        }
+                    }
+                    .disabled(!device.isAvailable)
+                }
+            }
+
+            Divider()
+
+            Toggle(
+                "Per-source routing",
+                isOn: Binding(
+                    get: { routes.routingEnabled },
+                    set: { routes.setRoutingEnabled($0) }
+                )
+            )
+        } label: {
+            HStack(spacing: 3) {
+                Image(
+                    systemName: routes.routingEnabled
+                        ? "arrow.triangle.branch"
+                        : "speaker.wave.2"
+                )
+                .font(.caption2)
+                Text(currentLabel)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.caption2)
+            }
+            .font(.caption)
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(Color.secondary.opacity(0.12))
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help(
+            routes.routingEnabled
+                ? "Route \(source.applicationName) to a specific output"
+                : "Enable per-source routing to pick a non-default output"
+        )
+    }
+
+    private func disableRoute() {
+        guard let bundleID = source.bundleIdentifier else {
+            return
+        }
+        routes.setEnabled(forBundleIdentifier: bundleID, enabled: false)
+    }
+
+    private func enableRoute(to deviceID: AudioDeviceID) {
+        guard let bundleID = source.bundleIdentifier else {
+            return
+        }
+        routes.setOutput(
+            forBundleIdentifier: bundleID,
+            deviceID: deviceID
+        )
+        routes.setEnabled(forBundleIdentifier: bundleID, enabled: true)
     }
 }
 

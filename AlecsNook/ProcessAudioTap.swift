@@ -174,46 +174,6 @@ final class ProcessAudioTap: @unchecked Sendable {
         try check(status, operation: "Create aggregate device")
 
         aggregateDeviceID = newDeviceID
-
-        // Give the IO scheduler more wall-clock time per cycle. The
-        // default aggregate-device buffer is on the order of 10 ms; with
-        // multiple per-process taps running concurrently the HALC proxy
-        // can miss cycles ("skipping cycle due to overload"). 2048
-        // frames at 48 kHz is ~43 ms, leaving plenty of slack.
-        setAggregateBufferSize(
-            aggregateDeviceID,
-            frames: 2_048
-        )
-    }
-
-    private func setAggregateBufferSize(
-        _ deviceID: AudioDeviceID,
-        frames: UInt32
-    ) {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyBufferFrameSize,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var desiredSize = frames
-        let status = AudioObjectSetPropertyData(
-            deviceID,
-            &address,
-            0,
-            nil,
-            UInt32(MemoryLayout<UInt32>.size),
-            &desiredSize
-        )
-
-        // Best-effort: not all aggregate devices accept buffer-size
-        // overrides, and we don't want to fail tap creation over it.
-        if status != noErr {
-            NSLog(
-                "ProcessAudioTap: failed to set aggregate buffer size "
-                + "(\(status)); using default"
-            )
-        }
     }
 
     private func readTapUID(
@@ -305,6 +265,48 @@ final class ProcessAudioTap: @unchecked Sendable {
         )
 
         try check(status, operation: "Start aggregate-device IO")
+
+        // Give the IO scheduler more wall-clock time per cycle. The
+        // default aggregate-device buffer is on the order of 10 ms; with
+        // multiple per-process taps running concurrently the HALC proxy
+        // can miss cycles ("skipping cycle due to overload"). 4096
+        // frames at 48 kHz is ~85 ms, well above the default. The
+        // selector must be applied AFTER `AudioDeviceStart` returns —
+        // applying it earlier is silently ignored on aggregate devices.
+        setAggregateBufferSize(
+            aggregateDeviceID,
+            frames: 4_096
+        )
+    }
+
+    private func setAggregateBufferSize(
+        _ deviceID: AudioDeviceID,
+        frames: UInt32
+    ) {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyBufferFrameSize,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var desiredSize = frames
+        let status = AudioObjectSetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            UInt32(MemoryLayout<UInt32>.size),
+            &desiredSize
+        )
+
+        // Best-effort: not all aggregate devices accept buffer-size
+        // overrides, and we don't want to fail tap creation over it.
+        if status != noErr {
+            NSLog(
+                "ProcessAudioTap: failed to set aggregate buffer size "
+                + "(\(status)); using default"
+            )
+        }
     }
 
     // MARK: - Meter calculation

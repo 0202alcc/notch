@@ -1,0 +1,69 @@
+flowchart TB
+    subgraph Apps["Source apps (playing audio)"]
+        A1[Firefox]
+        A2[Spotify]
+        A3[Logic Pro]
+        A4[Other processes...]
+    end
+
+    subgraph HAL["Core Audio HAL"]
+        H1["kAudioProcessPropertyIsRunningOutput<br/>per-process registry<br/>via ProcessAudioTap.swift:48-67<br/>(creates aggregate device + sub-taps)"]
+    end
+
+    subgraph AlecsNook["AlecsNook main actor"]
+        M["ApplicationAudioMonitor<br/>AlecsNook/ApplicationAudioMonitor.swift:194-687<br/>(discovers processes,<br/>manages per-source taps,<br/>spawns tap in startTap:475-558)"]
+        R["AudioRouter NEW<br/>AlecsNook/AudioRouter.swift:35-406<br/>• handleSamples audio-thread entry<br/>  line 67<br/>• per-output engines via<br/>  ensureEngine line 154<br/>• buffer scheduling via<br/>  performSchedule line 126"]
+        T["RouteStore NEW<br/>AlecsNook/RouteStore.swift:25-235<br/>• lock-free audio-thread reads<br/>  route(forSourceObjectID:)<br/>  line 70, isRoutingEnabled line 88<br/>• main-actor mutations<br/>  upsertRoute:100, setOutput:124,<br/>  setEnabled:147, setRoutingEnabled:169"]
+        V["SourceRoute NEW (Codable value)<br/>AlecsNook/SourceRoute.swift:16-68<br/>stableKey at line 62<br/>(bundleID or audio-object ID)"]
+    end
+
+    subgraph Hookup["Tap samples wire into router"]
+        T1["ProcessAudioTap samplesHandler<br/>AlecsNook/ApplicationAudioMonitor.swift:497-535<br/>existing — also calls<br/>AudioRouter.shared.handleSamples<br/>at line 526"]
+    end
+
+    subgraph Eng["Per-output playback engines"]
+        E1["AVAudioEngine #1<br/>target: MacBook Air Speakers<br/>AlecsNook/AudioRouter.swift:285-340<br/>(OutputEngine.start line 313)"]
+        E2["AVAudioEngine #2<br/>target: Roku TV<br/>(one OutputEngine per device ID,<br/>keyed in enginesByOutput line 41)"]
+        E3["AVAudioEngine #3<br/>target: AirPods<br/>(per-route AVAudioPlayerNode<br/>in playersByRoute line 47)"]
+    end
+
+    subgraph Output["Output devices"]
+        O1[Speakers]
+        O2[TV]
+        O3[AirPods]
+    end
+
+    subgraph UI["SwiftUI menu"]
+        U["SourceRouteMenu (per-source picker)<br/>AlecsNook/main.swift:309-419<br/>invoked from AudioSourceRow line 286<br/>calls RouteStore.setOutput line 401,<br/>setEnabled line 411,<br/>setRoutingEnabled line 388"]
+    end
+
+    subgraph Optional["Optional helper (if user installs)"]
+        BM["BackgroundMusic<br/>kernel-mode HAL plugin<br/>provides real per-app routing<br/>(not yet integrated)"]
+    end
+
+    A1 & A2 & A3 & A4 -->|output streams| H1
+    H1 -->|enumerated| M
+
+    M -->|manages taps per source| T1
+    T1 -->|raw PCM samples| R
+
+    R <-->|read/write assignments| T
+    T <-->|Codable encode/decode<br/>UserDefaults key<br/>AlecsNook.SourceRoutes.v1| V
+
+    R -->|routed samples| E1 & E2 & E3
+    E1 --> O1
+    E2 --> O2
+    E3 --> O3
+
+    U -->|binds user choice| T
+
+    AlecsNook -.->|future:<br/>call BM IPC for<br/>true per-app routing| BM
+    BM -.->|suppresses original playback| H1
+
+    classDef new fill:#fef3c7,stroke:#f59e0b,stroke-width:2px;
+    classDef existing fill:#dbeafe,stroke:#2563eb;
+    classDef optional fill:#f3e8ff,stroke:#a855f7,stroke-dasharray: 5 5;
+
+    class R,T,V,U,E1,E2,E3 new;
+    class M,T1,O1,O2,O3 existing;
+    class A1,A2,A3,A4,H1,BM optional;

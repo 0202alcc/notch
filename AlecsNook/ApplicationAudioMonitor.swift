@@ -477,6 +477,7 @@ final class ApplicationAudioMonitor: ObservableObject {
         model: ApplicationAudioSourceModel
     ) {
         let sourceID = process.processObjectID
+        let bundleID = process.bundleIdentifier
 
         // Per-tap throttle for the spectrum path. `OSAllocatedUnfairLock`
         // is `Sendable`, so it's safe to capture in the `@Sendable`
@@ -505,6 +506,9 @@ final class ApplicationAudioMonitor: ObservableObject {
                 guard shouldForward else { return }
 
                 let samples = Self.copySamples(from: bufferList)
+
+                // Forward to the spectrum analyzer for visualization
+                // (existing path).
                 Task { @MainActor in
                     guard let self else { return }
                     guard
@@ -514,6 +518,18 @@ final class ApplicationAudioMonitor: ObservableObject {
                     }
                     model.pushSamples(samples, sampleRate: 48_000)
                 }
+
+                // Forward to AudioRouter for per-source output routing.
+                // The router consults RouteStore lock-free and only
+                // does work if this source has an enabled route, so
+                // the no-route case is essentially free.
+                AudioRouter.shared.handleSamples(
+                    fromSourceObjectID: sourceID,
+                    bundleIdentifier: bundleID,
+                    bufferList: bufferList,
+                    frameCount: samples.count,
+                    sampleRate: 48_000
+                )
             }
         )
 
@@ -527,6 +543,17 @@ final class ApplicationAudioMonitor: ObservableObject {
 
             latestLevels[sourceID] = 0
         }
+
+        // Register / refresh the route entry for this source so the
+        // UI can show a picker for it even before the user has made a
+        // routing choice.
+        RouteStore.shared.upsertRoute(
+            SourceRoute(
+                sourceObjectID: sourceID,
+                bundleIdentifier: bundleID,
+                applicationName: process.applicationName
+            )
+        )
     }
 
     // MARK: - Live waveform updates

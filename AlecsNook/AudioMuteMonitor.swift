@@ -25,6 +25,21 @@ import os
 final class InputLevelMeter {
     private let peak = OSAllocatedUnfairLock<Float>(initialState: 0)
     private let engine = AVAudioEngine()
+    private let meterQueue = DispatchQueue(
+        label: "AlecsNook.InputLevelMeter",
+        qos: .userInitiated
+    )
+
+    /// Re-arm listener token for the active input device's
+    /// `kAudioDevicePropertyDeviceIsAlive`. When the default input
+    /// device disappears (USB headset unplugged, AirPods disconnect),
+    /// the HAL fires this and we re-bind to whichever input device is
+    /// now current — without it, the engine keeps its stale input node
+    /// and AVAudio posts `-10877` (`kIOReturnNotAttached`) on every
+    /// subsequent render cycle.
+    private var inputDeviceID: AudioDeviceID = kAudioObjectUnknown
+    private var isAliveListenerBlock: AudioObjectPropertyListenerBlock?
+    private var isAliveListenerObjectID: AudioObjectID = kAudioObjectUnknown
 
     /// Peak amplitude of the most recent render block (linear, 0...1).
     /// Thread-safe to read from any context.
@@ -33,34 +48,130 @@ final class InputLevelMeter {
     }
 
     init() {
-        let inputNode = engine.inputNode
-        let format = inputNode.inputFormat(forBus: 0)
-
-        // Install a tap on the input node so we receive every buffer the
-        // microphone produces. The buffer is delivered on a Core Audio
-        // thread, so this closure must not touch any SwiftUI / main-actor
-        // state directly - we just compute the peak and store it.
-        inputNode.installTap(
-            onBus: 0,
-            bufferSize: 1024,
-            format: format
-        ) { [weak self] buffer, _ in
-            self?.process(buffer: buffer)
-        }
-
-        do {
-            try engine.start()
-        } catch {
-            // Engine failed to start (no mic permission, no input device,
-            // sandbox restriction, etc.). Leave the peak at 0 - the mic
-            // indicator will stay off, which is the safe default.
-            NSLog("InputLevelMeter failed to start: \(error)")
-        }
+        arm()
     }
 
     deinit {
+        detachIsAliveListener()
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+    }
+
+    /// Install the input tap and start the engine. Safe to call
+    /// repeatedly — the engine is stopped first so successive
+    /// configurations don't stack taps on top of each other.
+    private func arm() {
+        meterQueue.async { [weak self] in
+            guard let self else { return }
+
+            self.detachIsAliveListener()
+            self.engine.stop()
+            self.engine.inputNode.removeTap(onBus: 0)
+
+            let inputNode = self.engine.inputNode
+            let format = inputNode.inputFormat(forBus: 0)
+
+            inputNode.installTap(
+                onBus: 0,
+                bufferSize: 1024,
+                format: format
+            ) { [weak self] buffer, _ in
+                self?.process(buffer: buffer)
+            }
+
+            do {
+                try self.engine.start()
+            } catch {
+                NSLog(
+                    "InputLevelMeter failed to start: \(error)"
+                )
+            }
+
+            // After the engine is up, ask the system which device it
+            // bound to and subscribe to that device's
+            // `kAudioDevicePropertyDeviceIsAlive` so we re-arm if it
+            // disappears.
+            self.attachIsAliveListener(forCurrentInputNode: inputNode)
+        }
+    }
+
+    private func attachIsAliveListener(
+        forCurrentInputNode inputNode: AVAudioInputNode
+    ) {
+        // `AVAudioInputNode` doesn't expose the underlying
+        // `AudioDeviceID` on macOS. Use the default-input-device
+        // hardware property — that's the device the engine bound to
+        // when it started.
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var deviceID = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &size,
+            &deviceID
+        )
+
+        guard status == noErr, deviceID != kAudioObjectUnknown else {
+            return
+        }
+
+        inputDeviceID = deviceID
+
+        var aliveAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsAlive,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.arm()
+        }
+
+        let addStatus = AudioObjectAddPropertyListenerBlock(
+            deviceID,
+            &aliveAddress,
+            meterQueue,
+            block
+        )
+
+        if addStatus == noErr {
+            isAliveListenerBlock = block
+            isAliveListenerObjectID = deviceID
+        }
+    }
+
+    private func detachIsAliveListener() {
+        guard
+            isAliveListenerObjectID != kAudioObjectUnknown,
+            let block = isAliveListenerBlock
+        else {
+            return
+        }
+
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsAlive,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        AudioObjectRemovePropertyListenerBlock(
+            isAliveListenerObjectID,
+            &address,
+            meterQueue,
+            block
+        )
+
+        isAliveListenerBlock = nil
+        isAliveListenerObjectID = kAudioObjectUnknown
+        inputDeviceID = kAudioObjectUnknown
     }
 
     /// Audio-thread callback. Iterates the samples of the supplied buffer
