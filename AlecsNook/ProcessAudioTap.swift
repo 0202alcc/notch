@@ -7,6 +7,7 @@
 
 import CoreAudio
 import Foundation
+import NookKit
 
 enum ProcessAudioTapError: LocalizedError {
     case coreAudio(operation: String, status: OSStatus)
@@ -34,9 +35,21 @@ enum ProcessAudioTapError: LocalizedError {
 /// requested, a copy of the underlying samples) elsewhere.
 final class ProcessAudioTap: @unchecked Sendable {
     typealias LevelHandler = @Sendable (Float) -> Void
-    typealias SamplesHandler = @Sendable (UnsafePointer<AudioBufferList>) -> Void
+    typealias SamplesHandler = @Sendable (
+        UnsafePointer<AudioBufferList>,
+        _ frameCount: Int,
+        _ sampleRate: Double
+    ) -> Void
 
     let processObjectIDs: [AudioObjectID]
+
+    /// Whether Core Audio should suppress the tapped process's normal
+    /// hardware output while this tap is being read. `.mutedWhenTapped`
+    /// is what enables echo-free split routing: while `AudioRouter`
+    /// consumes the tap, the original playback is silenced and the only
+    /// audible copy is the routed replay; if the router stops consuming,
+    /// the hardware path resumes automatically.
+    private(set) var muteBehavior: CATapMuteBehavior
 
     private let levelHandler: LevelHandler
     private let samplesHandler: SamplesHandler?
@@ -57,10 +70,12 @@ final class ProcessAudioTap: @unchecked Sendable {
 
     init(
         processObjectIDs: [AudioObjectID],
+        muteBehavior: CATapMuteBehavior = .unmuted,
         levelHandler: @escaping LevelHandler,
         samplesHandler: SamplesHandler? = nil
     ) {
         self.processObjectIDs = processObjectIDs
+        self.muteBehavior = muteBehavior
         self.levelHandler = levelHandler
         self.samplesHandler = samplesHandler
 
@@ -112,7 +127,11 @@ final class ProcessAudioTap: @unchecked Sendable {
 
         description.name = "MyNook \(processObjectIDs.count)-Process Mix"
         description.isPrivate = true
-        description.muteBehavior = .unmuted
+        description.muteBehavior = muteBehavior
+        // macOS 26+: remember tapped processes by bundle ID so a source
+        // that exits and relaunches is re-attached to the tap without
+        // AlecsNook having to notice and rebuild.
+        description.isProcessRestoreEnabled = true
 
         var newTapID = AudioObjectID(kAudioObjectUnknown)
 
@@ -218,6 +237,8 @@ final class ProcessAudioTap: @unchecked Sendable {
                 return
             }
 
+            let frameCount = AudioBufferListMath.frameCount(of: inputData)
+
             let level = Self.calculateRMS(
                 from: inputData
             )
@@ -225,7 +246,7 @@ final class ProcessAudioTap: @unchecked Sendable {
             self.levelHandler(level)
 
             if let samplesHandler = self.samplesHandler {
-                samplesHandler(inputData)
+                samplesHandler(inputData, frameCount, self.sampleRate)
             }
         }
 

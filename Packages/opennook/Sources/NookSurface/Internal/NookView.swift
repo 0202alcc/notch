@@ -302,6 +302,7 @@ where Expanded: View, CompactLeading: View, CompactTrailing: View {
         HStack(spacing: 0) {
             if !nook.disableCompactLeading {
                 nook.compactLeadingContent
+                    .environment(\.nookSurface, nook)
                     .safeAreaInset(edge: .leading, spacing: 0) { Color.clear.frame(width: 8) }
                     .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: 4) }
                     .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 8) }
@@ -317,6 +318,7 @@ where Expanded: View, CompactLeading: View, CompactTrailing: View {
 
             if nook.state == .compact, !nook.disableCompactTrailing {
                 nook.compactTrailingContent
+                    .environment(\.nookSurface, nook)
                     .safeAreaInset(edge: .trailing, spacing: 0) { Color.clear.frame(width: 8) }
                     .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: 4) }
                     .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 8) }
@@ -337,6 +339,7 @@ where Expanded: View, CompactLeading: View, CompactTrailing: View {
         HStack(spacing: 0) {
             if nook.state == .expanded {
                 nook.expandedContent
+                    .environment(\.nookSurface, nook)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .environment(\.nookContentInsets, contentInsets)
                     .transition(.blur(intensity: 6).combined(with: .scale(y: 0.72, anchor: .top)).combined(with: .opacity))

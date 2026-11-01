@@ -69,6 +69,37 @@ struct ExpandedMicrophoneStatusIcon: View {
     }
 }
 
+/// Compact-row split-routing quick action (design decision: the picker
+/// itself lives in the expanded panel; the compact button just signals
+/// state and expands the nook on click).
+struct CompactRouteQuickButton: View {
+    @ObservedObject private var routes = RouteStore.shared
+    @Environment(\.nookSurface) private var surface
+
+    var body: some View {
+        Button {
+            Task { await surface?.expand(on: nil) }
+        } label: {
+            Image(
+                systemName: routes.routingEnabled
+                    ? "arrow.triangle.branch"
+                    : "arrow.triangle.merge"
+            )
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(
+                routes.routingEnabled ? Color.accentColor : .white.opacity(0.85)
+            )
+            .frame(width: 22, height: 24)
+        }
+        .buttonStyle(.plain)
+        .help(
+            routes.routingEnabled
+                ? "Split routing on — click to manage per-app routes"
+                : "Split audio routing — click to open"
+        )
+    }
+}
+
 struct ActiveAudioSourcesView: View {
     @ObservedObject private var monitor =
         ApplicationAudioMonitor.shared
@@ -599,7 +630,10 @@ configuration.setCompactLeading {
     CompactOutputStatusView()
 }
 configuration.setCompactTrailing {
-    MicrophoneStatusIcon()
+    HStack(spacing: 2) {
+        CompactRouteQuickButton()
+        MicrophoneStatusIcon()
+    }
 }
 
 // Expanded top-left
