@@ -95,7 +95,7 @@ struct CompactRouteQuickButton: View {
         .help(
             routes.routingEnabled
                 ? "Split routing on — click to manage per-app routes"
-                : "Split audio routing — click to open"
+                : "Split routing off — sources play on the staging output"
         )
     }
 }
@@ -114,6 +114,14 @@ struct ActiveAudioSourcesView: View {
                     .font(.headline)
 
                 Spacer()
+
+                Text("Staging output")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .help(
+                        "Where sources without their own route play. "
+                        + "Changing this also changes the macOS system default."
+                    )
 
                 OutputDeviceMenu()
 
@@ -199,7 +207,7 @@ struct OutputDeviceMenu: View {
                 Text("No output devices available")
             } else {
                 if !outputDevices.devices.isEmpty {
-                    Section("Devices") {
+                    Section("Staging outputs") {
                         ForEach(outputDevices.devices) { device in
                             outputDeviceButton(device)
                         }
@@ -234,11 +242,7 @@ struct OutputDeviceMenu: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help(
-            outputDevices.devices.first(where: {
-                $0.id == outputDevices.currentOutputDeviceID
-            })?.isAvailable == false
-                ? "Currently disconnected"
-                : "Switch output device"
+            "Staging output - where unrouted sources play. Also the macOS system default."
         )
     }
 
@@ -297,6 +301,24 @@ struct AudioSourceRow: View {
 
     @ObservedObject var source: ApplicationAudioSourceModel
 
+    /// Device-appropriate icon for the replay volume control -
+    /// headphones when the routed target is headphones (AirPods etc.).
+    private static func volumeIconName(
+        routes: [String: SourceRoute],
+        outputDevices: OutputDeviceMonitor,
+        bundleID: String
+    ) -> String {
+        guard let route = routes[bundleID] else {
+            return "hifispeaker.fill"
+        }
+        let device = outputDevices.devices.first(where: {
+            $0.uid == route.outputDeviceUID
+                || (route.outputDeviceUID == nil
+                    && $0.id == route.outputDeviceID)
+        })
+        return device?.symbolName ?? "hifispeaker.fill"
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             if let icon = source.applicationIcon {
@@ -322,9 +344,15 @@ struct AudioSourceRow: View {
                     routes.routes[bundleID]?.enabled == true
                 {
                     HStack(spacing: 5) {
-                        Image(systemName: "speaker.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                        Image(
+                            systemName: Self.volumeIconName(
+                                routes: routes.routes,
+                                outputDevices: outputDevices,
+                                bundleID: bundleID
+                            )
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                         Slider(
                             value: Binding(
                                 get: {
@@ -418,14 +446,14 @@ struct SourceRouteMenu: View {
                 disableRoute()
             } label: {
                 Label(
-                    "System default (follow the top selector)",
+                    "Follow staging output",
                     systemImage: currentRoute?.enabled != true
                         ? "checkmark"
                         : "circle"
                 )
             }
             .help(
-                "No split routing for this source - it plays on the output selected at the top"
+                "No split routing for this source - it plays on the staging output selected at the top"
             )
 
             Section("Output devices") {
@@ -497,7 +525,7 @@ struct SourceRouteMenu: View {
         .help(
             isRoutedToFixedDevice
                 ? "Pinned to \(currentLabel) - click to change or release"
-                : "Follows the top output selector (\(currentLabel)) - click to pin a device"
+                : "Follows the staging output (\(currentLabel)) - click to pin a device"
         )
     }
 

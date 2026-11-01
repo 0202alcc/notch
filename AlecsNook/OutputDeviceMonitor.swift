@@ -18,6 +18,37 @@ struct OutputDevice: Identifiable, Hashable {
     let name: String
     let uid: String
 
+    /// SF Symbol that best represents this device kind, inferred from
+    /// its name. Device names are the only reliable signal - transport
+    /// type cannot distinguish AirPods from a Bluetooth speaker.
+    var symbolName: String {
+        let lowered = name.lowercased()
+
+        if lowered.contains("airpod")
+            || lowered.contains("headphone")
+            || lowered.contains("headset")
+            || lowered.contains("earbud")
+        {
+            return "headphones"
+        }
+        if lowered.contains("speaker") {
+            return "speaker.fill"
+        }
+        if lowered.contains("display")
+            || lowered.contains("monitor")
+            || lowered.contains("studio display")
+        {
+            return "display"
+        }
+        if lowered.contains("homepod")
+            || lowered.contains("soundbar")
+            || lowered.contains("stereo")
+        {
+            return "hifispeaker.fill"
+        }
+        return "hifispeaker.fill"
+    }
+
     /// True when the device is currently routable. Hidden devices
     /// (`kAudioDevicePropertyDeviceIsHidden == true`) are typically
     /// offline — remembered AirPlay targets, disconnected external
