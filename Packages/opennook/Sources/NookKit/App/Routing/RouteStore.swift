@@ -58,10 +58,38 @@ public final class RouteStore: ObservableObject {
     private let defaultsKey = "AlecsNook.SourceRoutes.v1"
     private let routingEnabledKey = "AlecsNook.RoutingEnabled.v1"
 
-    public init(defaults: UserDefaults = .standard) {
+    public     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        self.legacySandboxPlistURL = Self.defaultLegacySandboxPlistURL()
         load()
     }
+
+    /// Test seam: inject the legacy sandbox container plist explicitly.
+    /// Production uses the default path derived from the bundle ID.
+    init(
+        defaults: UserDefaults,
+        legacySandboxPlistURL: URL?
+    ) {
+        self.defaults = defaults
+        self.legacySandboxPlistURL = legacySandboxPlistURL
+        load()
+    }
+
+    /// When the app was sandboxed, its defaults lived in the container.
+    /// Un-sandboxing moves the store to `~/Library/Preferences`; the
+    /// container plist is the migration source.
+    private static func defaultLegacySandboxPlistURL() -> URL? {
+        guard
+            let bundleID = Bundle.main.bundleIdentifier
+        else {
+            return nil
+        }
+        return FileManager.default
+            .urls(for: .libraryDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Containers/\(bundleID)/Data/Library/Preferences/\(bundleID).plist")
+    }
+
+    private let legacySandboxPlistURL: URL?
 
     // MARK: - Lookup
 
@@ -256,6 +284,8 @@ public final class RouteStore: ObservableObject {
                     + "\(error)"
                 )
             }
+        } else {
+            migrateLegacySandboxRoutes()
         }
         routingEnabled =
             defaults.bool(forKey: routingEnabledKey)
@@ -268,6 +298,45 @@ public final class RouteStore: ObservableObject {
         }
 
         publishSnapshot()
+    }
+
+    /// One-time adoption of routes persisted by the sandboxed build.
+    /// Runs only when the current store is empty; adopting writes
+    /// through to the new location immediately so the legacy file can
+    /// be deleted afterwards.
+    private func migrateLegacySandboxRoutes() {
+        guard
+            let url = legacySandboxPlistURL,
+            FileManager.default.fileExists(atPath: url.path),
+            let raw = try? Data(contentsOf: url),
+            let plist = try? PropertyListSerialization.propertyList(
+                from: raw,
+                options: [],
+                format: nil
+            ) as? [String: Any]
+        else {
+            return
+        }
+
+        var migratedRoutes: [String: SourceRoute] = [:]
+        if let data = plist[defaultsKey] as? Data {
+            migratedRoutes = (try? JSONDecoder().decode(
+                [String: SourceRoute].self,
+                from: data
+            )) ?? [:]
+        }
+        guard !migratedRoutes.isEmpty else { return }
+
+        routes = migratedRoutes
+        if let legacyMaster = plist[routingEnabledKey] as? Bool {
+            routingEnabled = legacyMaster
+            defaults.set(legacyMaster, forKey: routingEnabledKey)
+        }
+        persist()
+        NSLog(
+            "RouteStore: migrated \(migratedRoutes.count) routes from "
+            + "the legacy sandbox container"
+        )
     }
 
     private func persist() {

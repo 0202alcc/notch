@@ -232,6 +232,100 @@ final class RouteStoreTests: XCTestCase {
         XCTAssertFalse(reloaded.isRoutingEnabled)
     }
 
+    // MARK: - Legacy sandbox migration
+
+    /// Un-sandboxing the app moves its defaults location. A store with
+    /// nothing persisted must adopt routes from the legacy sandbox
+    /// container plist (routes + master switch) so no routing config is
+    /// lost across the transition.
+    func testMigratesLegacySandboxRoutes() throws {
+        // Build a legacy container plist the way the sandboxed build
+        // wrote it.
+        let routes: [String: SourceRoute] = [
+            "com.serato.seratodj": SourceRoute(
+                sourceObjectID: 118,
+                bundleIdentifier: "com.serato.seratodj",
+                applicationName: "Serato DJ Pro",
+                outputDeviceID: 251,
+                enabled: true
+            ),
+        ]
+        let legacyPlist = try XCTUnwrap(try? PropertyListSerialization.data(
+            fromPropertyList: [
+                "AlecsNook.SourceRoutes.v1": try JSONEncoder().encode(routes),
+                "AlecsNook.RoutingEnabled.v1": true,
+            ] as [String: Any],
+            format: .binary,
+            options: 0
+        ))
+        let legacyURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("legacy-sandbox-\(UUID().uuidString).plist")
+        try legacyPlist.write(to: legacyURL)
+        defer { try? FileManager.default.removeItem(at: legacyURL) }
+
+        // Fresh (empty) defaults + the legacy file → adopted.
+        let store = RouteStore(
+            defaults: defaults,
+            legacySandboxPlistURL: legacyURL
+        )
+
+        XCTAssertEqual(
+            store.routes["com.serato.seratodj"]?.applicationName,
+            "Serato DJ Pro"
+        )
+        XCTAssertTrue(store.isRoutingEnabled)
+
+        // The adoption is persisted immediately to the new location -
+        // the legacy file can then be deleted safely.
+        let reloaded = RouteStore(
+            defaults: defaults,
+            legacySandboxPlistURL: nil
+        )
+        XCTAssertEqual(
+            reloaded.routes["com.serato.seratodj"]?.applicationName,
+            "Serato DJ Pro"
+        )
+        XCTAssertTrue(reloaded.isRoutingEnabled)
+    }
+
+    /// Migration must never clobber already-persisted state in the new
+    /// location - it runs only when the new store is empty.
+    func testMigrationSkippedWhenNewLocationHasData() throws {
+        let store = RouteStore(defaults: defaults)
+        store.upsertRoute(makeRoute(objectID: 1, deviceID: 42))
+
+        let legacyRoutes: [String: SourceRoute] = [
+            "com.legacy.app": SourceRoute(
+                sourceObjectID: 9,
+                bundleIdentifier: "com.legacy.app",
+                applicationName: "Legacy"
+            ),
+        ]
+        let legacyPlist = try XCTUnwrap(try? PropertyListSerialization.data(
+            fromPropertyList: [
+                "AlecsNook.SourceRoutes.v1": try JSONEncoder().encode(legacyRoutes),
+            ] as [String: Any],
+            format: .binary,
+            options: 0
+        ))
+        let legacyURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("legacy-sandbox-\(UUID().uuidString).plist")
+        try legacyPlist.write(to: legacyURL)
+        defer { try? FileManager.default.removeItem(at: legacyURL) }
+
+        let reloaded = RouteStore(
+            defaults: defaults,
+            legacySandboxPlistURL: legacyURL
+        )
+
+        // New-location state wins; legacy adds nothing.
+        XCTAssertEqual(
+            reloaded.routes["com.example.music"]?.outputDeviceID,
+            42
+        )
+        XCTAssertNil(reloaded.routes["com.legacy.app"])
+    }
+
     /// Replay volume persists, round-trips, and is preserved across
     /// source re-discovery and route edits.
     func testVolumeRoundTripAndPreservation() {

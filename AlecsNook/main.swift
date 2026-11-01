@@ -141,6 +141,8 @@ struct ActiveAudioSourcesView: View {
                 .fixedSize()
             }
 
+            NoiseControlSlider()
+
             if monitor.activeSources.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "speaker.slash")
@@ -177,6 +179,95 @@ struct ActiveAudioSourcesView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// AirPods noise control: a four-segment control (the platform offers
+/// discrete modes only - no continuous blend exists anywhere). Each
+/// click presses the matching Control Center checkbox through the AX
+/// hierarchy: one visible panel flash per deliberate click, identical
+/// to opening Control Center by hand. No polling, no automatic
+/// refreshes - reads happen only when the nook panel opens.
+struct NoiseControlSlider: View {
+    @ObservedObject private var controller = ListeningModeController.shared
+    @ObservedObject private var outputDevices = OutputDeviceMonitor.shared
+
+    /// AirPods are the active output - the noise-control UI only makes
+    /// sense then. Cheap, flicker-free check.
+    private var airPodsActive: Bool {
+        guard
+            let currentID = outputDevices.currentOutputDeviceID,
+            let device = outputDevices.devices.first(where: { $0.id == currentID })
+        else {
+            return false
+        }
+        return device.name.localizedCaseInsensitiveContains("airpods")
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "waveform.badge.magnifyingglass")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .help("AirPods noise control")
+
+            if controller.accessibilityDenied {
+                Button {
+                    // Re-request (this is what adds AlecsNook to the
+                    // Accessibility list) and deep-link straight to the
+                    // exact pane.
+                    let options = [
+                        kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true,
+                    ] as CFDictionary
+                    _ = AXIsProcessTrustedWithOptions(options)
+                    if let url = URL(
+                        string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+                    ) {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    Text("Enable noise control — opens System Settings → Accessibility")
+                        .font(.caption)
+                        .foregroundStyle(Color.accentColor)
+                        .underline()
+                        .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .help("Grants the Accessibility permission AirPods noise control needs")
+                Spacer()
+            } else if airPodsActive {
+                Picker(
+                    "Noise Control",
+                    selection: Binding(
+                        get: { controller.currentMode ?? .adaptive },
+                        set: { controller.setMode($0) }
+                    )
+                ) {
+                    ForEach(ListeningMode.allCases, id: \.self) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 330)
+                .help(
+                    "Switch AirPods listening mode - opens Control Center briefly, like clicking it yourself"
+                )
+            } else {
+                Text("Noise control available when AirPods are the output")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                Spacer()
+            }
+        }
+        .onAppear {
+            // One read per nook-open, and only when the AirPods are
+            // live: a single brief Control Center flash, never a loop.
+            if airPodsActive {
+                controller.refresh()
+            }
+        }
     }
 }
 
@@ -299,6 +390,9 @@ struct AudioSourceRow: View {
     @ObservedObject private var routes =
         RouteStore.shared
 
+    @ObservedObject private var nowPlaying =
+        NowPlayingMonitor.shared
+
     @ObservedObject var source: ApplicationAudioSourceModel
 
     /// Device-appropriate icon for the replay volume control -
@@ -334,6 +428,19 @@ struct AudioSourceRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(source.applicationName)
                     .lineLimit(1)
+
+                // Now-playing metadata: "Artist — Title" from the
+                // catalog when this app reports what it plays.
+                if let nowPlayingLine = nowPlaying.line(
+                    forBundleIdentifier: source.bundleIdentifier
+                ) {
+                    Text(nowPlayingLine)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help(nowPlayingLine)
+                        .transition(.opacity)
+                }
 
                 // Per-source replay volume - the effective volume while
                 // the source is routed (the tap mutes its normal path,
