@@ -388,24 +388,28 @@ struct SourceRouteMenu: View {
     }
 
     private var currentLabel: String {
-        // The master switch gates the whole router - a stored route is
-        // inert until it is on, so the label must not claim otherwise.
-        guard
-            routes.routingEnabled,
-            let route = currentRoute,
-            route.enabled
-        else {
-            return "System"
+        // Routed: the pinned device (UID-first match - the cached
+        // AudioDeviceID can go stale when a device reconnects).
+        if routes.routingEnabled, let route = currentRoute, route.enabled {
+            let device = outputDevices.devices.first(where: { device in
+                device.uid == route.outputDeviceUID
+                    || (route.outputDeviceUID == nil
+                        && device.id == route.outputDeviceID)
+            })
+            return device?.name ?? "Device offline"
         }
-        // UID-first match: the cached AudioDeviceID can go stale when a
-        // device reconnects, the UID does not.
-        let device = outputDevices.devices.first(where: { device in
-            device.uid == route.outputDeviceUID
-                || (route.outputDeviceUID == nil
-                    && device.id == route.outputDeviceID)
-        })
-        guard let device else { return "System" }
-        return device.name
+
+        // Unrouted: the label shows the *effective* destination - the
+        // system default the top selector currently points at - so the
+        // row never names a mode when it can name the actual device.
+        return outputDevices.devices.first(where: {
+            $0.id == outputDevices.currentOutputDeviceID
+        })?.name ?? "System"
+    }
+
+    private var isRoutedToFixedDevice: Bool {
+        routes.routingEnabled
+            && currentRoute?.enabled == true
     }
 
     var body: some View {
@@ -469,7 +473,7 @@ struct SourceRouteMenu: View {
         } label: {
             HStack(spacing: 3) {
                 Image(
-                    systemName: routes.routingEnabled
+                    systemName: isRoutedToFixedDevice
                         ? "arrow.triangle.branch"
                         : "speaker.wave.2"
                 )
@@ -491,9 +495,9 @@ struct SourceRouteMenu: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help(
-            routes.routingEnabled
-                ? "Route \(source.applicationName) to a specific output"
-                : "Enable per-source routing to pick a non-default output"
+            isRoutedToFixedDevice
+                ? "Pinned to \(currentLabel) - click to change or release"
+                : "Follows the top output selector (\(currentLabel)) - click to pin a device"
         )
     }
 
