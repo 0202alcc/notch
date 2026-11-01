@@ -584,6 +584,12 @@ struct ExpandedOutputStatusView: View {
 
 var configuration = NookConfiguration()
 
+// Pin the chrome to dark: the expanded panel should read as one continuous surface
+// with the physical notch, which is black even in light mode. `.followSystem` paints
+// solid white on a light-mode Mac, which looks broken against the real notch. This is
+// a launch seed (see NookPreferenceDefaults) - a persisted user choice always wins.
+configuration.preferenceDefaults.appearance.chromePalette = .dark
+
 configuration.setHome {
     MyNookView()
 }
