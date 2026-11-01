@@ -211,10 +211,28 @@ struct NoiseControlSlider: View {
                 .help("AirPods noise control")
 
             if controller.accessibilityDenied {
-                Text("Enable AlecsNook in System Settings → Accessibility for noise control")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                Button {
+                    // Re-request (this is what adds AlecsNook to the
+                    // Accessibility list) and deep-link straight to the
+                    // exact pane.
+                    let options = [
+                        kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true,
+                    ] as CFDictionary
+                    _ = AXIsProcessTrustedWithOptions(options)
+                    if let url = URL(
+                        string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+                    ) {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    Text("Enable noise control — opens System Settings → Accessibility")
+                        .font(.caption)
+                        .foregroundStyle(Color.accentColor)
+                        .underline()
+                        .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .help("Grants the Accessibility permission AirPods noise control needs")
                 Spacer()
             } else if let model {
                 Slider(

@@ -53,6 +53,24 @@ final class ListeningModeController: ObservableObject {
         // Settings opens; the user toggles AlecsNook manually).
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
         accessibilityDenied = !AXIsProcessTrustedWithOptions(options)
+        if accessibilityDenied {
+            pollForPermission()
+        }
+    }
+
+    /// Cheap permission polling (no Control Center interaction) - the
+    /// slider lights up automatically the moment the user flips the
+    /// toggle, without restarting the app.
+    private func pollForPermission() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, self.accessibilityDenied else { return }
+            if AXIsProcessTrusted() {
+                self.accessibilityDenied = false
+                self.refresh()
+            } else {
+                self.pollForPermission()
+            }
+        }
     }
 
     /// Fetch the current mode + available modes.
