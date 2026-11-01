@@ -229,6 +229,10 @@ final class ApplicationAudioMonitor: ObservableObject {
     /// longer matches. Debounced so menu clicks don't thrash the HAL.
     private var routeObserverCancellable: AnyCancellable?
 
+    /// Applies per-source replay volume changes immediately (no
+    /// debounce - dragging a volume slider must be heard in real time).
+    private var volumeObserverCancellable: AnyCancellable?
+
     // Hysteresis state for source reconciliation.
     //
     // Core Audio's `kAudioProcessPropertyIsRunningOutput` is queried every
@@ -308,6 +312,11 @@ final class ApplicationAudioMonitor: ObservableObject {
 
             self.reconcileTapMuteBehaviors()
         }
+
+        volumeObserverCancellable = RouteStore.shared.$routes
+            .sink { routes in
+                AudioRouter.shared.applyVolumes(routes)
+            }
     }
 
     // MARK: - Source discovery

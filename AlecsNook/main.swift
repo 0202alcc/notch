@@ -309,8 +309,42 @@ struct AudioSourceRow: View {
                     .frame(width: 24, height: 24)
             }
 
-            Text(source.applicationName)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(source.applicationName)
+                    .lineLimit(1)
+
+                // Per-source replay volume - the effective volume while
+                // the source is routed (the tap mutes its normal path,
+                // so the replay player is the only audible copy).
+                if
+                    routes.routingEnabled,
+                    let bundleID = source.bundleIdentifier,
+                    routes.routes[bundleID]?.enabled == true
+                {
+                    HStack(spacing: 5) {
+                        Image(systemName: "speaker.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Slider(
+                            value: Binding(
+                                get: {
+                                    routes.routes[bundleID]?.volume ?? 1
+                                },
+                                set: { newValue in
+                                    routes.setVolume(
+                                        forBundleIdentifier: bundleID,
+                                        volume: newValue
+                                    )
+                                }
+                            ),
+                            in: 0...1
+                        )
+                        .frame(width: 100)
+                        .help("Volume for \(source.applicationName) on its routed output")
+                    }
+                    .transition(.opacity)
+                }
+            }
 
             Spacer()
 
@@ -380,55 +414,58 @@ struct SourceRouteMenu: View {
                 disableRoute()
             } label: {
                 Label(
-                    "System default",
+                    "System default (follow the top selector)",
                     systemImage: currentRoute?.enabled != true
                         ? "checkmark"
                         : "circle"
                 )
             }
+            .help(
+                "No split routing for this source - it plays on the output selected at the top"
+            )
 
-            Divider()
-
-            if outputDevices.devices.isEmpty {
-                Text("No output devices available")
-            } else {
-                ForEach(outputDevices.devices) { device in
-                    Button {
-                        enableRoute(to: device)
-                    } label: {
-                        let active =
-                            currentRoute?.enabled == true
-                            && (currentRoute?.outputDeviceUID == device.uid
-                                || (currentRoute?.outputDeviceUID == nil
-                                    && currentRoute?.outputDeviceID
-                                        == device.id))
-                        if active {
-                            Label(
-                                device.name,
-                                systemImage: "checkmark"
-                            )
-                        } else if device.isAvailable {
-                            Text(device.name)
-                        } else {
-                            Label(
-                                device.name,
-                                systemImage: "wifi.exclamationmark"
-                            )
+            Section("Output devices") {
+                if outputDevices.devices.isEmpty {
+                    Text("No output devices available")
+                } else {
+                    ForEach(outputDevices.devices) { device in
+                        Button {
+                            enableRoute(to: device)
+                        } label: {
+                            let active =
+                                currentRoute?.enabled == true
+                                && (currentRoute?.outputDeviceUID == device.uid
+                                    || (currentRoute?.outputDeviceUID == nil
+                                        && currentRoute?.outputDeviceID
+                                            == device.id))
+                            if active {
+                                Label(
+                                    device.name,
+                                    systemImage: "checkmark"
+                                )
+                            } else if device.isAvailable {
+                                Text(device.name)
+                            } else {
+                                Label(
+                                    device.name,
+                                    systemImage: "wifi.exclamationmark"
+                                )
+                            }
                         }
+                        .disabled(!device.isAvailable)
                     }
-                    .disabled(!device.isAvailable)
                 }
             }
 
-            Divider()
-
-            Toggle(
-                "Per-source routing",
-                isOn: Binding(
-                    get: { routes.routingEnabled },
-                    set: { routes.setRoutingEnabled($0) }
+            Section("Split routing") {
+                Toggle(
+                    "Enabled for all sources",
+                    isOn: Binding(
+                        get: { routes.routingEnabled },
+                        set: { routes.setRoutingEnabled($0) }
+                    )
                 )
-            )
+            }
         } label: {
             HStack(spacing: 3) {
                 Image(

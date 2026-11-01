@@ -303,12 +303,26 @@ final class AudioRouter {
         }
 
         let player = AVAudioPlayerNode()
+        player.volume = Float(route.volume)
         engine.attachAndConnect(
             player: player,
             format: format
         )
         playersByRoute[key] = player
         return player
+    }
+
+    /// Applies each route's persisted volume to its replay player(s).
+    /// Cheap enough to call on every route change - players across all
+    /// engine generations for a bundle ID are covered.
+    @MainActor
+    func applyVolumes(_ routes: [String: SourceRoute]) {
+        for (playerKey, player) in playersByRoute {
+            guard let route = routes[playerKey.bundleIdentifier] else {
+                continue
+            }
+            player.volume = Float(route.volume)
+        }
     }
 
     /// The playback format of a tapped source: non-interleaved Float32

@@ -114,7 +114,10 @@ public final class RouteStore: ObservableObject {
                 // `enabled: false`; the user's persisted choice wins so
                 // routing survives an app or source restart. Turning a
                 // route off is `setEnabled`'s job, never upsert's.
-                enabled: route.enabled || existing.enabled
+                enabled: route.enabled || existing.enabled,
+                // Same for volume: discovery never carries volume
+                // intent, so the persisted choice always wins.
+                volume: existing.volume
             )
         } else {
             resolved = route
@@ -142,7 +145,8 @@ public final class RouteStore: ObservableObject {
             applicationName: route.applicationName,
             outputDeviceID: deviceID,
             outputDeviceUID: deviceUID ?? route.outputDeviceUID,
-            enabled: route.enabled
+            enabled: route.enabled,
+            volume: route.volume
         )
         routes[key] = route
         publishSnapshot()
@@ -165,7 +169,9 @@ public final class RouteStore: ObservableObject {
             bundleIdentifier: route.bundleIdentifier,
             applicationName: route.applicationName,
             outputDeviceID: route.outputDeviceID,
-            enabled: enabled
+            outputDeviceUID: route.outputDeviceUID,
+            enabled: enabled,
+            volume: route.volume
         )
         routes[key] = updated
         publishSnapshot()
@@ -180,6 +186,30 @@ public final class RouteStore: ObservableObject {
         routingEnabled = enabled
         publishSnapshot()
         defaults.set(enabled, forKey: routingEnabledKey)
+    }
+
+    /// Set a route's replay volume (0...1). Applied live to the
+    /// route's replay player, so mid-playback changes are immediate.
+    @MainActor
+    public func setVolume(
+        forBundleIdentifier bundleID: String,
+        volume: Double
+    ) {
+        let key = bundleID
+        guard var route = routes[key] else { return }
+        let clamped = min(max(volume, 0), 1)
+        route = SourceRoute(
+            sourceObjectID: route.sourceObjectID,
+            bundleIdentifier: route.bundleIdentifier,
+            applicationName: route.applicationName,
+            outputDeviceID: route.outputDeviceID,
+            outputDeviceUID: route.outputDeviceUID,
+            enabled: route.enabled,
+            volume: clamped
+        )
+        routes[key] = route
+        publishSnapshot()
+        persist()
     }
 
     // MARK: - Persistence

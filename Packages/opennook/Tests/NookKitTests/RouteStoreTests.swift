@@ -232,6 +232,63 @@ final class RouteStoreTests: XCTestCase {
         XCTAssertFalse(reloaded.isRoutingEnabled)
     }
 
+    /// Replay volume persists, round-trips, and is preserved across
+    /// source re-discovery and route edits.
+    func testVolumeRoundTripAndPreservation() {
+        let store = RouteStore(defaults: defaults)
+        store.upsertRoute(makeRoute(objectID: 1, deviceID: 42, enabled: true))
+        store.setVolume(forBundleIdentifier: "com.example.music", volume: 0.4)
+
+        XCTAssertEqual(store.routes["com.example.music"]?.volume, 0.4)
+
+        // Source restarts (upsert with defaults) - volume survives.
+        store.upsertRoute(makeRoute(objectID: 200))
+        XCTAssertEqual(store.routes["com.example.music"]?.volume, 0.4)
+
+        // Route edits - volume survives.
+        store.setOutput(forBundleIdentifier: "com.example.music", deviceID: 7)
+        store.setEnabled(forBundleIdentifier: "com.example.music", enabled: false)
+        XCTAssertEqual(store.routes["com.example.music"]?.volume, 0.4)
+
+        // Reload from disk.
+        let reloaded = RouteStore(defaults: defaults)
+        XCTAssertEqual(reloaded.routes["com.example.music"]?.volume, 0.4)
+    }
+
+    func testSetVolumeClampsAndDefaults() {
+        let store = RouteStore(defaults: defaults)
+        store.upsertRoute(makeRoute(objectID: 1))
+
+        // Default is full volume.
+        XCTAssertEqual(store.routes["com.example.music"]?.volume, 1)
+
+        store.setVolume(forBundleIdentifier: "com.example.music", volume: 2)
+        XCTAssertEqual(store.routes["com.example.music"]?.volume, 1)
+        store.setVolume(forBundleIdentifier: "com.example.music", volume: -1)
+        XCTAssertEqual(store.routes["com.example.music"]?.volume, 0)
+    }
+
+    /// Routes persisted before volume tracking existed must decode with
+    /// `volume == 1` instead of failing the whole store.
+    func testLegacyRouteJSONWithoutVolumeDecodes() throws {
+        let legacy = """
+        {
+          "sourceObjectID": 251,
+          "bundleIdentifier": "com.serato.seratodj",
+          "applicationName": "Serato DJ Pro",
+          "outputDeviceID": 251,
+          "enabled": true
+        }
+        """
+        let route = try JSONDecoder().decode(
+            SourceRoute.self,
+            from: Data(legacy.utf8)
+        )
+
+        XCTAssertEqual(route.volume, 1)
+        XCTAssertEqual(route.enabled, true)
+    }
+
     /// `nil` bundle IDs fall back to an object-ID-derived stable key
     /// and stay addressable through `route(forSourceObjectID:)`.
     func testRouteWithoutBundleIDKeyedByObjectID() {

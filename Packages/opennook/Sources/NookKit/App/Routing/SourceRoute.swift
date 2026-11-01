@@ -55,13 +55,20 @@ public struct SourceRoute: Codable, Hashable {
     /// would normally route it.
     public var enabled: Bool
 
+    /// Replay gain for this source (0...1, 1 = full). Applied to the
+    /// replay player, which is the only audible path while the route is
+    /// enabled (the tap mutes the original), so this is the effective
+    /// per-source volume.
+    public var volume: Double
+
     public init(
         sourceObjectID: AudioObjectID,
         bundleIdentifier: String?,
         applicationName: String,
         outputDeviceID: AudioDeviceID? = nil,
         outputDeviceUID: String? = nil,
-        enabled: Bool = false
+        enabled: Bool = false,
+        volume: Double = 1
     ) {
         self.sourceObjectID = sourceObjectID
         self.bundleIdentifier = bundleIdentifier
@@ -69,11 +76,12 @@ public struct SourceRoute: Codable, Hashable {
         self.outputDeviceID = outputDeviceID
         self.outputDeviceUID = outputDeviceUID
         self.enabled = enabled
+        self.volume = volume
     }
 
-    // Custom Codable so records written before `outputDeviceUID` existed
-    // decode cleanly (missing key → `nil`) instead of failing the whole
-    // store back to defaults.
+    // Custom Codable so records written before `outputDeviceUID` / `volume`
+    // existed decode cleanly (missing keys → defaults) instead of failing
+    // the whole store back to defaults.
     private enum CodingKeys: String, CodingKey {
         case sourceObjectID
         case bundleIdentifier
@@ -81,6 +89,7 @@ public struct SourceRoute: Codable, Hashable {
         case outputDeviceID
         case outputDeviceUID
         case enabled
+        case volume
     }
 
     public init(from decoder: Decoder) throws {
@@ -91,6 +100,7 @@ public struct SourceRoute: Codable, Hashable {
         outputDeviceID = try container.decodeIfPresent(AudioDeviceID.self, forKey: .outputDeviceID)
         outputDeviceUID = try container.decodeIfPresent(String.self, forKey: .outputDeviceUID)
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        volume = try container.decodeIfPresent(Double.self, forKey: .volume) ?? 1
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -101,6 +111,7 @@ public struct SourceRoute: Codable, Hashable {
         try container.encodeIfPresent(outputDeviceID, forKey: .outputDeviceID)
         try container.encodeIfPresent(outputDeviceUID, forKey: .outputDeviceUID)
         try container.encode(enabled, forKey: .enabled)
+        try container.encode(volume, forKey: .volume)
     }
 
     /// Stable key used to look up routes in the in-memory map and to
