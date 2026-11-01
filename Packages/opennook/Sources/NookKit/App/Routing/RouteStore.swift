@@ -1,6 +1,6 @@
 //
 //  RouteStore.swift
-//  AlecsNook
+//  NookKit
 //
 //  Created by Alec Candidato on 8/7/26.
 //
@@ -22,19 +22,19 @@ import os
 /// Snapshots are also persisted to `UserDefaults` so routes survive
 /// app relaunch. Persistence is best-effort and never blocks the
 /// audio path.
-final class RouteStore: ObservableObject {
-    nonisolated(unsafe) static let shared = RouteStore()
+public final class RouteStore: ObservableObject {
+    public nonisolated(unsafe) static let shared = RouteStore()
 
     /// `true` indicates the user wants any captured source audio to be
     /// replayed by `AudioRouter`. `false` means "system default for
     /// everything" — AlecsNook still taps for visualization but does not
     /// replay, so there is no echo. This is the safe default until the
     /// user explicitly enables routing.
-    @Published var routingEnabled: Bool = false
+    @Published public var routingEnabled: Bool = false
 
     /// Latest snapshot of every known route, keyed by `SourceRoute.stableKey`.
     /// Published so the SwiftUI row pickers re-render when routes change.
-    @Published private(set) var routes: [String: SourceRoute] = [:]
+    @Published public private(set) var routes: [String: SourceRoute] = [:]
 
     /// Lock-free snapshot consumed by the audio thread. Updated from
     /// the main actor; reads from any thread are safe.
@@ -58,7 +58,7 @@ final class RouteStore: ObservableObject {
     private let defaultsKey = "AlecsNook.SourceRoutes.v1"
     private let routingEnabledKey = "AlecsNook.RoutingEnabled.v1"
 
-    init(defaults: UserDefaults = .standard) {
+    public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         load()
     }
@@ -67,7 +67,7 @@ final class RouteStore: ObservableObject {
 
     /// Look up the route for an audio-process `AudioObjectID`.
     /// Called from the audio thread.
-    nonisolated func route(forSourceObjectID id: AudioObjectID)
+    public nonisolated func route(forSourceObjectID id: AudioObjectID)
         -> SourceRoute?
     {
         snapshotLock.withLock { $0.routesByObjectID[id] }
@@ -76,7 +76,7 @@ final class RouteStore: ObservableObject {
     /// Look up the route by bundle identifier. Used when the source's
     /// `AudioObjectID` has been recycled (after a process restart) but
     /// the bundle identifier is unchanged.
-    nonisolated func route(forBundleIdentifier bundleID: String?)
+    public nonisolated func route(forBundleIdentifier bundleID: String?)
         -> SourceRoute?
     {
         guard let bundleID else { return nil }
@@ -85,7 +85,7 @@ final class RouteStore: ObservableObject {
 
     /// Whether the user wants `AudioRouter` to actually replay audio.
     /// Read from the audio thread.
-    nonisolated var isRoutingEnabled: Bool {
+    public nonisolated var isRoutingEnabled: Bool {
         snapshotLock.withLock { $0.routingEnabled }
     }
 
@@ -97,7 +97,7 @@ final class RouteStore: ObservableObject {
     /// lose their routing preference when an app restarts and gets a
     /// new `AudioObjectID`.
     @MainActor
-    func upsertRoute(_ route: SourceRoute) {
+    public func upsertRoute(_ route: SourceRoute) {
         let key = route.stableKey
 
         let resolved: SourceRoute
@@ -108,7 +108,11 @@ final class RouteStore: ObservableObject {
                 applicationName: route.applicationName,
                 outputDeviceID: route.outputDeviceID
                     ?? existing.outputDeviceID,
-                enabled: route.enabled
+                // A re-discovered source arrives with the default
+                // `enabled: false`; the user's persisted choice wins so
+                // routing survives an app or source restart. Turning a
+                // route off is `setEnabled`'s job, never upsert's.
+                enabled: route.enabled || existing.enabled
             )
         } else {
             resolved = route
@@ -121,7 +125,7 @@ final class RouteStore: ObservableObject {
 
     /// Update just the `outputDeviceID` for an existing route.
     @MainActor
-    func setOutput(
+    public func setOutput(
         forBundleIdentifier bundleID: String,
         deviceID: AudioDeviceID?
     ) {
@@ -144,7 +148,7 @@ final class RouteStore: ObservableObject {
     /// source with a route still leaves the `outputDeviceID` set so the
     /// user can toggle it back on later.
     @MainActor
-    func setEnabled(
+    public func setEnabled(
         forBundleIdentifier bundleID: String,
         enabled: Bool
     ) {
@@ -166,7 +170,7 @@ final class RouteStore: ObservableObject {
     /// pass-through; the audio thread reads `isRoutingEnabled` and
     /// skips replay.
     @MainActor
-    func setRoutingEnabled(_ enabled: Bool) {
+    public func setRoutingEnabled(_ enabled: Bool) {
         routingEnabled = enabled
         publishSnapshot()
         defaults.set(enabled, forKey: routingEnabledKey)
