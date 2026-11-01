@@ -13,6 +13,11 @@ import Foundation
 import NookKit
 import os
 
+private let routerLog = Logger(
+    subsystem: "io.github.0202alcc.AlecsNook",
+    category: "AudioRouter"
+)
+
 /// Receives audio buffers from per-source `ProcessAudioTap`s and
 /// replays them to the user's chosen output device for each source.
 ///
@@ -134,9 +139,16 @@ final class AudioRouter {
         outputDeviceID: AudioDeviceID,
         sampleRate: Double
     ) {
-        let engine = ensureEngine(
-            forDeviceID: outputDeviceID
-        )
+        guard
+            let engine = ensureEngine(
+                forDeviceID: outputDeviceID
+            )
+        else {
+            // Engine could not start (transient HAL errors happen while
+            // devices settle at launch). Skip this buffer; a later one
+            // retries engine creation.
+            return
+        }
 
         let player = ensurePlayer(
             forRoute: route,
@@ -150,16 +162,21 @@ final class AudioRouter {
             channels: channels,
             frameCount: frameCount,
             on: player,
+            engine: engine,
             sourceSampleRate: sampleRate
         )
     }
 
     // MARK: - Engine lifecycle
 
+    /// Returns the engine for `deviceID`, creating and starting it on
+    /// first use. Returns `nil` when the engine cannot start - the
+    /// engine is then NOT retained anywhere, so a failed engine can
+    /// never end up holding attached players.
     @MainActor
     private func ensureEngine(
         forDeviceID deviceID: AudioDeviceID
-    ) -> OutputEngine {
+    ) -> OutputEngine? {
         if let existing = enginesByOutput[deviceID] {
             return existing
         }
@@ -171,13 +188,13 @@ final class AudioRouter {
         do {
             try engine.start()
             enginesByOutput[deviceID] = engine
+            routerLog.info("engine started for device \(deviceID)")
             return engine
         } catch {
-            NSLog(
-                "AudioRouter: failed to start engine for device "
-                + "\(deviceID): \(error)"
+            routerLog.error(
+                "failed to start engine for device \(deviceID): \(error)"
             )
-            return engine
+            return nil
         }
     }
 
@@ -194,18 +211,27 @@ final class AudioRouter {
                 ?? "audio-object-\(route.sourceObjectID)",
             outputDeviceID: outputDeviceID
         )
+        let format = Self.sourceFormat(
+            sampleRate: sourceSampleRate,
+            channels: sourceChannels
+        )
 
         if let existing = playersByRoute[key] {
-            return existing
+            if existing.engine === engine.engine {
+                return existing
+            }
+            // Stale player: attached to a dead or replaced engine (or
+            // none at all). Rebuild it against the live engine.
+            if let oldEngine = existing.engine as? AVAudioEngine {
+                oldEngine.detach(existing)
+            }
+            playersByRoute.removeValue(forKey: key)
         }
 
         let player = AVAudioPlayerNode()
         engine.attachAndConnect(
             player: player,
-            format: Self.sourceFormat(
-                sampleRate: sourceSampleRate,
-                channels: sourceChannels
-            )
+            format: format
         )
         playersByRoute[key] = player
         return player
@@ -235,8 +261,19 @@ final class AudioRouter {
         channels: [[Float]],
         frameCount: Int,
         on player: AVAudioPlayerNode,
+        engine: OutputEngine,
         sourceSampleRate: Double
     ) {
+        // Defense in depth: a play() on an engine-less node raises an
+        // NSException inside AVFAudio. Only schedule when the player is
+        // genuinely wired to this live, running engine.
+        guard
+            player.engine === engine.engine,
+            engine.engine.isRunning
+        else {
+            return
+        }
+
         let outputChannelCount = max(channels.count, 1)
 
         let format = Self.sourceFormat(
@@ -343,6 +380,11 @@ final class AudioRouter {
 /// Source-format players are attached per route; the mixer resamples
 /// each player's stream to the device's native format, so sources
 /// running at a different rate than the device stay correct.
+private let engineLog = Logger(
+    subsystem: "io.github.0202alcc.AlecsNook",
+    category: "OutputEngine"
+)
+
 private final class OutputEngine {
     let deviceID: AudioDeviceID
 
@@ -372,9 +414,8 @@ private final class OutputEngine {
                 UInt32(MemoryLayout<AudioDeviceID>.size)
             )
             if status != noErr {
-                NSLog(
-                    "OutputEngine: AudioUnitSetProperty failed "
-                    + "(\(status)) for device \(deviceID)"
+                engineLog.error(
+                    "AudioUnitSetProperty CurrentDevice failed (\(status)) for device \(self.deviceID) - engine will play to the system default device instead"
                 )
             }
         }
