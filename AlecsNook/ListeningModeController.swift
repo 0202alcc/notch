@@ -170,8 +170,14 @@ final class ListeningModeController: ObservableObject {
             let available = elements.compactMap {
                 ListeningMode(axDescription: $0.desc)
             }
+            // Only a *mode-labeled* checked box counts as the current
+            // mode - other sections (Output device, Conversation
+            // Awareness) also carry val=1 checkboxes with non-mode
+            // labels.
             let current = elements
-                .first(where: { $0.value })
+                .first(where: {
+                    $0.value && ListeningMode(axDescription: $0.desc) != nil
+                })
                 .flatMap { ListeningMode(axDescription: $0.desc) }
             return ModeRead(available: available, current: current)
         }
@@ -254,8 +260,11 @@ final class ListeningModeController: ObservableObject {
         AXUIElementCopyAttributeValue(
             element, kAXChildrenAttribute as CFString, &value
         )
-        guard let array = value as? NSArray else { return [] }
-        return array.map { $0 as! AXUIElement }
+        guard let value else { return [] }
+        if let array = value as? NSArray {
+            return array.map { $0 as! AXUIElement }
+        }
+        return [value as! AXUIElement]
     }
 
     private static func parentOf(_ element: AXUIElement) -> AXUIElement? {
@@ -267,19 +276,33 @@ final class ListeningModeController: ObservableObject {
     /// Opens the Control Center grid and presses its Sound button.
     /// Returns false when any step failed (caller retries).
     private static func openSoundPanel(app ccApp: AXUIElement) -> Bool {
-        var menuBarValue: CFTypeRef?
-        AXUIElementCopyAttributeValue(
-            ccApp, "AXExtrasMenuBar" as CFString, &menuBarValue
-        )
-        guard
-            let menuBarValue,
-            let menuBarArray = menuBarValue as? NSArray,
-            let firstObject = menuBarArray.firstObject
-        else {
-            listeningLog.error("no AXExtrasMenuBar on Control Center")
+        // Control Center's status items may surface under either
+        // attribute depending on macOS version; the value may also be a
+        // single element rather than an array (the probe tolerated
+        // both - the first app build did not, and failed here).
+        var menuBar: AXUIElement?
+        for attribute in ["AXExtrasMenuBar", kAXMenuBarAttribute as String] {
+            var value: CFTypeRef?
+            let error = AXUIElementCopyAttributeValue(
+                ccApp, attribute as CFString, &value
+            )
+            if error != .success {
+                listeningLog.error(
+                    "AX read \(attribute, privacy: .public) failed with \(error.rawValue, privacy: .public)"
+                )
+                continue
+            }
+            if let array = value as? NSArray, array.count > 0 {
+                menuBar = array.firstObject.map { $0 as! AXUIElement }
+            } else if let single = value {
+                menuBar = single as! AXUIElement
+            }
+            if menuBar != nil { break }
+        }
+        guard let menuBar else {
+            listeningLog.error("no menu bar attribute on Control Center")
             return false
         }
-        let menuBar = firstObject as! AXUIElement
 
         // The grid item's description starts with "Control Center".
         var gridItem: AXUIElement?
