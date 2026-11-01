@@ -37,9 +37,9 @@ final class NowPlayingMonitor: ObservableObject {
     private var pollInFlight = false
 
     /// Apps with an AppleScript dictionary we can query directly.
-    private static let scriptableApps: [(bundleID: String, app: String)] = [
-        (bundleID: "com.spotify.client", app: "Spotify"),
-        (bundleID: "com.apple.Music", app: "Music"),
+    private static let scriptableApps: [String] = [
+        "com.spotify.client",
+        "com.apple.Music",
     ]
 
     private let scriptQueue = DispatchQueue(
@@ -83,19 +83,17 @@ final class NowPlayingMonitor: ObservableObject {
 
         // 2. Scriptable apps: query their player state + current track
         //    off the main thread.
-        for app in Self.scriptableApps {
+        for bundleID in Self.scriptableApps {
             guard
                 !NSRunningApplication.runningApplications(
-                    withBundleIdentifier: app.bundleID
+                    withBundleIdentifier: bundleID
                 ).isEmpty
             else {
                 continue
             }
 
-            let bundleID = app.bundleID
-            let appName = app.app
             scriptQueue.async { [weak self] in
-                let result = Self.queryApp(appName: appName)
+                let result = Self.queryApp(bundleID: bundleID)
                 Task { @MainActor in
                     self?.applyScriptResult(result, bundleID: bundleID)
                 }
@@ -155,12 +153,14 @@ final class NowPlayingMonitor: ObservableObject {
     /// automation was denied. First contact triggers macOS's
     /// "AlecsNook wants to control <app>" consent prompt - that is
     /// expected and one-time.
-    private static func queryApp(appName: String) -> ScriptResult? {
+    private static func queryApp(bundleID: String) -> ScriptResult? {
         // The caller already checked NSRunningApplication, so the app is
         // running - no System Events probe needed (that would cost a
         // second automation consent prompt for zero information).
+        // `application id` with the bundle ID avoids name-based app
+        // lookup issues.
         let query = """
-        tell application "\(appName)"
+        tell application id "\(bundleID)"
             set playerState to player state as text
             if playerState is "stopped" then return "stopped"
             set trackName to name of current track
@@ -170,7 +170,7 @@ final class NowPlayingMonitor: ObservableObject {
         end tell
         """
 
-        guard let output = runSimpleAppleScript(query) else {
+        guard let output = runAppleScript(query, forBundleID: bundleID) else {
             return nil
         }
 
@@ -180,6 +180,9 @@ final class NowPlayingMonitor: ObservableObject {
 
         let parts = output.components(separatedBy: "\u{1F}")
         guard parts.count >= 4 else {
+            nowPlayingLog.error(
+                "unexpected script output from \(bundleID, privacy: .public): '\(output.prefix(120), privacy: .public)'"
+            )
             return nil
         }
 
@@ -194,18 +197,47 @@ final class NowPlayingMonitor: ObservableObject {
         )
     }
 
-    private static func runSimpleAppleScript(
-        _ source: String
+    /// Runs an AppleScript via `/usr/bin/osascript`. NSAppleScript is
+    /// not thread-safe and silently fails off the main thread; a
+    /// subprocess has no threading constraints and reports errors
+    /// reliably.
+    private static func runAppleScript(
+        _ source: String,
+        forBundleID bundleID: String
     ) -> String? {
-        let script = NSAppleScript(source: source)
-        var errorInfo: NSDictionary?
-        let output = script?.executeAndReturnError(&errorInfo)
-        if let errorInfo {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", source]
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        do {
+            try process.run()
+        } catch {
             nowPlayingLog.error(
-                "apple script failed: \(errorInfo, privacy: .public)"
+                "osascript spawn failed for \(bundleID, privacy: .public): \(error)"
             )
             return nil
         }
-        return output?.stringValue
+
+        let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            let message = String(
+                data: stderr.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            ) ?? "no stderr"
+            nowPlayingLog.error(
+                "osascript failed for \(bundleID, privacy: .public), status \(process.terminationStatus): \(message.prefix(300), privacy: .public)"
+            )
+            return nil
+        }
+
+        return String(data: outputData, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
