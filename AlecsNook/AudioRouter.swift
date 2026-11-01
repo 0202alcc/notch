@@ -59,6 +59,12 @@ final class AudioRouter {
         qos: .userInteractive
     )
 
+    /// Per-device last engine-start failure (`CFAbsoluteTime`). A device
+    /// that failed to start is not retried for `engineRetryInterval` so
+    /// a stream of per-buffer retries cannot hammer the HAL.
+    private var lastEngineFailure: [AudioDeviceID: TimeInterval] = [:]
+    private let engineRetryInterval: TimeInterval = 2.0
+
     private init() {}
 
     // MARK: - Audio-thread entry point
@@ -139,20 +145,38 @@ final class AudioRouter {
         outputDeviceID: AudioDeviceID,
         sampleRate: Double
     ) {
+        // Resolve the *current* device for the route's durable UID -
+        // persisted AudioDeviceIDs go stale whenever a device
+        // reconnects (AirPods case closed/reopened, coreaudiod restart).
         guard
-            let engine = ensureEngine(
-                forDeviceID: outputDeviceID
+            let target = resolveTargetDevice(
+                for: route,
+                cachedID: outputDeviceID
             )
         else {
-            // Engine could not start (transient HAL errors happen while
-            // devices settle at launch). Skip this buffer; a later one
-            // retries engine creation.
             return
         }
 
+        // Backoff: skip retries shortly after a failed engine start.
+        if let lastFailure = lastEngineFailure[target.deviceID],
+           CFAbsoluteTimeGetCurrent() - lastFailure < engineRetryInterval
+        {
+            return
+        }
+
+        guard
+            let engine = ensureEngine(
+                forDeviceID: target.deviceID
+            )
+        else {
+            lastEngineFailure[target.deviceID] = CFAbsoluteTimeGetCurrent()
+            return
+        }
+        lastEngineFailure.removeValue(forKey: target.deviceID)
+
         let player = ensurePlayer(
             forRoute: route,
-            outputDeviceID: outputDeviceID,
+            outputDeviceID: target.deviceID,
             engine: engine,
             sourceSampleRate: sampleRate,
             sourceChannels: channels.count
@@ -165,6 +189,56 @@ final class AudioRouter {
             engine: engine,
             sourceSampleRate: sampleRate
         )
+    }
+
+    /// Resolves a route's target output to the device's *current*
+    /// `AudioDeviceID`. Prefers the durable UID; falls back to the
+    /// cached ID. When the UID is known but the device is gone, the
+    /// route is disabled (so the tap returns to normal playback instead
+    /// of leaving the source silently muted) and `nil` is returned.
+    @MainActor
+    private func resolveTargetDevice(
+        for route: SourceRoute,
+        cachedID: AudioDeviceID
+    ) -> (deviceID: AudioDeviceID, uid: String?)? {
+        let monitor = OutputDeviceMonitor.shared
+
+        if let uid = route.outputDeviceUID {
+            if let device = monitor.devices.first(where: {
+                $0.uid == uid
+            }) {
+                // Refresh the cached ID if the device reconnected under
+                // a new runtime ID.
+                if device.id != cachedID {
+                    Task { @MainActor in
+                        RouteStore.shared.setOutput(
+                            forBundleIdentifier: route.stableKey,
+                            deviceID: device.id,
+                            deviceUID: uid
+                        )
+                    }
+                }
+                return (device.id, uid)
+            }
+
+            // UID known, device absent: route cannot play. Disable it so
+            // the tap flips back to `.unmuted` and the source is heard
+            // on the normal path rather than staying silently muted.
+            routerLog.error(
+                "routed device uid \(uid, privacy: .public) unavailable; disabling route for \(route.applicationName, privacy: .public)"
+            )
+            Task { @MainActor in
+                RouteStore.shared.setEnabled(
+                    forBundleIdentifier: route.stableKey,
+                    enabled: false
+                )
+            }
+            return nil
+        }
+
+        // Legacy route: only the cached ID exists. Use it as-is; the
+        // next time the user re-picks a device a UID is recorded.
+        return (cachedID, nil)
     }
 
     // MARK: - Engine lifecycle

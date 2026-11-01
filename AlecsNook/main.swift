@@ -359,14 +359,18 @@ struct SourceRouteMenu: View {
         guard
             routes.routingEnabled,
             let route = currentRoute,
-            route.enabled,
-            let deviceID = route.outputDeviceID,
-            let device = outputDevices.devices.first(where: {
-                $0.id == deviceID
-            })
+            route.enabled
         else {
             return "System"
         }
+        // UID-first match: the cached AudioDeviceID can go stale when a
+        // device reconnects, the UID does not.
+        let device = outputDevices.devices.first(where: { device in
+            device.uid == route.outputDeviceUID
+                || (route.outputDeviceUID == nil
+                    && device.id == route.outputDeviceID)
+        })
+        guard let device else { return "System" }
         return device.name
     }
 
@@ -390,12 +394,14 @@ struct SourceRouteMenu: View {
             } else {
                 ForEach(outputDevices.devices) { device in
                     Button {
-                        enableRoute(to: device.id)
+                        enableRoute(to: device)
                     } label: {
                         let active =
                             currentRoute?.enabled == true
-                            && currentRoute?.outputDeviceID
-                                == device.id
+                            && (currentRoute?.outputDeviceUID == device.uid
+                                || (currentRoute?.outputDeviceUID == nil
+                                    && currentRoute?.outputDeviceID
+                                        == device.id))
                         if active {
                             Label(
                                 device.name,
@@ -469,7 +475,7 @@ struct SourceRouteMenu: View {
         }
     }
 
-    private func enableRoute(to deviceID: AudioDeviceID) {
+    private func enableRoute(to device: OutputDevice) {
         guard let bundleID = source.bundleIdentifier else {
             return
         }
@@ -481,7 +487,8 @@ struct SourceRouteMenu: View {
         }
         routes.setOutput(
             forBundleIdentifier: bundleID,
-            deviceID: deviceID
+            deviceID: device.id,
+            deviceUID: device.uid
         )
         routes.setEnabled(forBundleIdentifier: bundleID, enabled: true)
     }

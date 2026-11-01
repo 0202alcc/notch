@@ -108,6 +108,8 @@ public final class RouteStore: ObservableObject {
                 applicationName: route.applicationName,
                 outputDeviceID: route.outputDeviceID
                     ?? existing.outputDeviceID,
+                outputDeviceUID: route.outputDeviceUID
+                    ?? existing.outputDeviceUID,
                 // A re-discovered source arrives with the default
                 // `enabled: false`; the user's persisted choice wins so
                 // routing survives an app or source restart. Turning a
@@ -123,11 +125,14 @@ public final class RouteStore: ObservableObject {
         persist()
     }
 
-    /// Update just the `outputDeviceID` for an existing route.
+    /// Update just the output for an existing route. Both the runtime
+    /// `AudioDeviceID` (cached) and the durable device UID are stored;
+    /// the UID is what survives reconnection.
     @MainActor
     public func setOutput(
         forBundleIdentifier bundleID: String,
-        deviceID: AudioDeviceID?
+        deviceID: AudioDeviceID?,
+        deviceUID: String? = nil
     ) {
         let key = bundleID
         guard var route = routes[key] else { return }
@@ -136,6 +141,7 @@ public final class RouteStore: ObservableObject {
             bundleIdentifier: route.bundleIdentifier,
             applicationName: route.applicationName,
             outputDeviceID: deviceID,
+            outputDeviceUID: deviceUID ?? route.outputDeviceUID,
             enabled: route.enabled
         )
         routes[key] = route

@@ -37,7 +37,17 @@ public struct SourceRoute: Codable, Hashable {
 
     /// `nil` means "system default"; otherwise a specific Core Audio
     /// `AudioDeviceID` of the output device to play this source to.
+    ///
+    /// This is a *cached* handle: `AudioDeviceID`s are runtime-only and
+    /// go stale when a device reconnects or coreaudiod restarts. The
+    /// durable identity is `outputDeviceUID`; the ID is re-resolved
+    /// from the UID at replay time.
     public var outputDeviceID: AudioDeviceID?
+
+    /// Durable identity of the target device (Core Audio device UID).
+    /// Survives reconnection, reboot, and ID recycling; `nil` for
+    /// routes written before UID tracking existed.
+    public var outputDeviceUID: String?
 
     /// Whether the audio should also be replayed by `AudioRouter` to
     /// the chosen device. `false` is the safe default (no echo) and
@@ -50,13 +60,47 @@ public struct SourceRoute: Codable, Hashable {
         bundleIdentifier: String?,
         applicationName: String,
         outputDeviceID: AudioDeviceID? = nil,
+        outputDeviceUID: String? = nil,
         enabled: Bool = false
     ) {
         self.sourceObjectID = sourceObjectID
         self.bundleIdentifier = bundleIdentifier
         self.applicationName = applicationName
         self.outputDeviceID = outputDeviceID
+        self.outputDeviceUID = outputDeviceUID
         self.enabled = enabled
+    }
+
+    // Custom Codable so records written before `outputDeviceUID` existed
+    // decode cleanly (missing key → `nil`) instead of failing the whole
+    // store back to defaults.
+    private enum CodingKeys: String, CodingKey {
+        case sourceObjectID
+        case bundleIdentifier
+        case applicationName
+        case outputDeviceID
+        case outputDeviceUID
+        case enabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sourceObjectID = try container.decode(AudioObjectID.self, forKey: .sourceObjectID)
+        bundleIdentifier = try container.decodeIfPresent(String.self, forKey: .bundleIdentifier)
+        applicationName = try container.decode(String.self, forKey: .applicationName)
+        outputDeviceID = try container.decodeIfPresent(AudioDeviceID.self, forKey: .outputDeviceID)
+        outputDeviceUID = try container.decodeIfPresent(String.self, forKey: .outputDeviceUID)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sourceObjectID, forKey: .sourceObjectID)
+        try container.encodeIfPresent(bundleIdentifier, forKey: .bundleIdentifier)
+        try container.encode(applicationName, forKey: .applicationName)
+        try container.encodeIfPresent(outputDeviceID, forKey: .outputDeviceID)
+        try container.encodeIfPresent(outputDeviceUID, forKey: .outputDeviceUID)
+        try container.encode(enabled, forKey: .enabled)
     }
 
     /// Stable key used to look up routes in the in-memory map and to

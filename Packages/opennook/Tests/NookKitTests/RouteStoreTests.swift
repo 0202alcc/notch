@@ -114,6 +114,52 @@ final class RouteStoreTests: XCTestCase {
         XCTAssertEqual(stored?.outputDeviceID, 5)
     }
 
+    /// The durable device UID survives a source re-discovery, like the
+    /// cached ID does.
+    func testUpsertPreservesDeviceUIDOnBundleIDCollision() {
+        let store = RouteStore(defaults: defaults)
+        var original = makeRoute(objectID: 100, deviceID: 42, enabled: true)
+        original = SourceRoute(
+            sourceObjectID: 100,
+            bundleIdentifier: "com.example.music",
+            applicationName: "Music",
+            outputDeviceID: 42,
+            outputDeviceUID: "UID-AIRPODS",
+            enabled: true
+        )
+        store.upsertRoute(original)
+
+        let restarted = makeRoute(objectID: 200)
+        store.upsertRoute(restarted)
+
+        let stored = store.routes["com.example.music"]
+        XCTAssertEqual(stored?.outputDeviceUID, "UID-AIRPODS")
+        XCTAssertEqual(stored?.outputDeviceID, 42)
+    }
+
+    /// Routes persisted before UID tracking existed must decode with
+    /// `outputDeviceUID == nil` instead of failing the whole store.
+    func testLegacyRouteJSONWithoutUIDDecodes() throws {
+        let legacy = """
+        {
+          "sourceObjectID": 251,
+          "bundleIdentifier": "com.serato.seratodj",
+          "applicationName": "Serato DJ Pro",
+          "outputDeviceID": 251,
+          "enabled": true
+        }
+        """
+        let route = try JSONDecoder().decode(
+            SourceRoute.self,
+            from: Data(legacy.utf8)
+        )
+
+        XCTAssertEqual(route.bundleIdentifier, "com.serato.seratodj")
+        XCTAssertEqual(route.outputDeviceID, 251)
+        XCTAssertNil(route.outputDeviceUID)
+        XCTAssertEqual(route.enabled, true)
+    }
+
     /// The audio thread reads the snapshot off the main actor - the
     /// published snapshot must be visible to non-main readers the
     /// moment the mutation returns.
