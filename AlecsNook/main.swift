@@ -182,25 +182,26 @@ struct ActiveAudioSourcesView: View {
     }
 }
 
-/// AirPods noise-control slider: four discrete stops (the platform has
-/// no continuous blend - Adaptive Audio is the system's own dynamic
-/// mix). Dragging snaps to the nearest stop and presses the matching
-/// Control Center checkbox through the AX hierarchy.
+/// AirPods noise control: a four-segment control (the platform offers
+/// discrete modes only - no continuous blend exists anywhere). Each
+/// click presses the matching Control Center checkbox through the AX
+/// hierarchy: one visible panel flash per deliberate click, identical
+/// to opening Control Center by hand. No polling, no automatic
+/// refreshes - reads happen only when the nook panel opens.
 struct NoiseControlSlider: View {
     @ObservedObject private var controller = ListeningModeController.shared
+    @ObservedObject private var outputDevices = OutputDeviceMonitor.shared
 
-    @State private var dragValue: Double?
-
-    private var model: ListeningModeModel? {
-        guard !controller.availableModes.isEmpty else { return nil }
-        return ListeningModeModel(available: controller.availableModes)
-    }
-
-    private var shownValue: Double {
-        dragValue
-            ?? controller.currentMode
-                .flatMap { model?.position(of: $0) }
-            ?? 0
+    /// AirPods are the active output - the noise-control UI only makes
+    /// sense then. Cheap, flicker-free check.
+    private var airPodsActive: Bool {
+        guard
+            let currentID = outputDevices.currentOutputDeviceID,
+            let device = outputDevices.devices.first(where: { $0.id == currentID })
+        else {
+            return false
+        }
+        return device.name.localizedCaseInsensitiveContains("airpods")
     }
 
     var body: some View {
@@ -234,29 +235,24 @@ struct NoiseControlSlider: View {
                 .buttonStyle(.plain)
                 .help("Grants the Accessibility permission AirPods noise control needs")
                 Spacer()
-            } else if let model {
-                Slider(
-                    value: Binding(
-                        get: { shownValue },
-                        set: { dragValue = $0 }
-                    ),
-                    in: 0...1
-                ) { editing in
-                    if !editing {
-                        let position = dragValue ?? shownValue
-                        if let mode = model.mode(at: position) {
-                            controller.setMode(mode)
-                        }
-                        dragValue = nil
+            } else if airPodsActive {
+                Picker(
+                    "Noise Control",
+                    selection: Binding(
+                        get: { controller.currentMode ?? .adaptive },
+                        set: { controller.setMode($0) }
+                    )
+                ) {
+                    ForEach(ListeningMode.allCases, id: \.self) { mode in
+                        Text(mode.rawValue).tag(mode)
                     }
                 }
-                .frame(maxWidth: 170)
-
-                Text(controller.currentMode?.rawValue ?? "—")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .frame(width: 110, alignment: .leading)
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 330)
+                .help(
+                    "Switch AirPods listening mode - opens Control Center briefly, like clicking it yourself"
+                )
             } else {
                 Text("Noise control available when AirPods are the output")
                     .font(.caption)
@@ -266,7 +262,11 @@ struct NoiseControlSlider: View {
             }
         }
         .onAppear {
-            controller.refresh()
+            // One read per nook-open, and only when the AirPods are
+            // live: a single brief Control Center flash, never a loop.
+            if airPodsActive {
+                controller.refresh()
+            }
         }
     }
 }

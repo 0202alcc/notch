@@ -43,6 +43,11 @@ final class ListeningModeController: ObservableObject {
     /// a hint instead of a dead slider.
     @Published private(set) var accessibilityDenied = false
 
+    /// Re-entrancy + cooldown state for AX panel operations.
+    private var refreshInFlight = false
+    private var lastRefreshAt: TimeInterval = 0
+    private let refreshCooldown: TimeInterval = 5
+
     private let axQueue = DispatchQueue(
         label: "org.aleccandidato.MyNook.listening-mode-ax",
         qos: .userInitiated
@@ -74,15 +79,26 @@ final class ListeningModeController: ObservableObject {
     }
 
     /// Fetch the current mode + available modes.
+    ///
+    /// Cooldown + re-entrancy guards: a flaky open must never cascade
+    /// into the refresh loop that made Control Center flicker (the V1
+    /// glitch).
     func refresh() {
         guard !accessibilityDenied else { return }
+        guard !refreshInFlight else { return }
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - lastRefreshAt >= refreshCooldown else { return }
+        refreshInFlight = true
+        lastRefreshAt = now
+
         axQueue.async { [weak self] in
             let result = Self.readModes()
             Task { @MainActor in
+                self?.refreshInFlight = false
                 guard let self else { return }
                 if let result {
                     self.availableModes = result.available
-                    self.currentMode = result.current
+                    self.currentMode = result.current ?? self.currentMode
                 } else {
                     self.availableModes = []
                     self.currentMode = nil
@@ -92,15 +108,23 @@ final class ListeningModeController: ObservableObject {
     }
 
     /// Switch to a mode by pressing its Control Center checkbox.
+    ///
+    /// Optimistic: the UI reflects the choice instantly (one panel
+    /// flash per deliberate click, no read-back reopen). The press's
+    /// read-back (taken while the panel is still open - free) confirms
+    /// or corrects the optimistic value.
     func setMode(_ mode: ListeningMode) {
         guard !accessibilityDenied else { return }
+        currentMode = mode
         axQueue.async { [weak self] in
             let result = Self.pressMode(mode)
             Task { @MainActor in
-                guard let self else { return }
-                if let result {
+                guard let self, let result else { return }
+                if let confirmed = result.current {
+                    self.currentMode = confirmed
+                }
+                if !result.available.isEmpty {
                     self.availableModes = result.available
-                    self.currentMode = result.current
                 }
             }
         }
