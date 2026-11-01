@@ -224,6 +224,13 @@ public final class RouteStore: ObservableObject {
         routingEnabled =
             defaults.bool(forKey: routingEnabledKey)
 
+        // Auto-heal: a store written by the build where per-source picks
+        // did not imply the master switch can hold enabled routes with
+        // no master record at all. Honor the user's visible intent.
+        if defaults.object(forKey: routingEnabledKey) == nil {
+            routingEnabled = routes.values.contains { $0.enabled }
+        }
+
         publishSnapshot()
     }
 

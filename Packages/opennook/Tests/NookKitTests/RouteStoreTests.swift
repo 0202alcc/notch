@@ -160,6 +160,32 @@ final class RouteStoreTests: XCTestCase {
         XCTAssertFalse(store.routingEnabled)
     }
 
+    /// Legacy stores (before per-source picks implied the master switch)
+    /// hold enabled routes with no master record. Loading such a store
+    /// honors the visible intent: master on.
+    func testLoadAutoHealsMasterSwitchWhenRoutesExist() {
+        let store = RouteStore(defaults: defaults)
+        store.upsertRoute(makeRoute(objectID: 1, deviceID: 42))
+        store.setEnabled(forBundleIdentifier: "com.example.music", enabled: true)
+
+        // The mutating ops above deliberately never touch the master.
+        XCTAssertFalse(store.routingEnabled)
+
+        let reloaded = RouteStore(defaults: defaults)
+        XCTAssertTrue(reloaded.isRoutingEnabled)
+    }
+
+    /// An explicit master-off must not be overridden by the auto-heal.
+    func testExplicitMasterOffNotOverriddenByHeal() {
+        let store = RouteStore(defaults: defaults)
+        store.upsertRoute(makeRoute(objectID: 1, deviceID: 42))
+        store.setEnabled(forBundleIdentifier: "com.example.music", enabled: true)
+        store.setRoutingEnabled(false)
+
+        let reloaded = RouteStore(defaults: defaults)
+        XCTAssertFalse(reloaded.isRoutingEnabled)
+    }
+
     /// `nil` bundle IDs fall back to an object-ID-derived stable key
     /// and stay addressable through `route(forSourceObjectID:)`.
     func testRouteWithoutBundleIDKeyedByObjectID() {

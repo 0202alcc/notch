@@ -354,7 +354,10 @@ struct SourceRouteMenu: View {
     }
 
     private var currentLabel: String {
+        // The master switch gates the whole router - a stored route is
+        // inert until it is on, so the label must not claim otherwise.
         guard
+            routes.routingEnabled,
             let route = currentRoute,
             route.enabled,
             let deviceID = route.outputDeviceID,
@@ -456,11 +459,25 @@ struct SourceRouteMenu: View {
             return
         }
         routes.setEnabled(forBundleIdentifier: bundleID, enabled: false)
+
+        // Last route gone: switch the master off too, so every tap
+        // returns to plain observation and the replay engines tear
+        // down. The reconcile sink handles the tap side.
+        let anyEnabled = routes.routes.values.contains { $0.enabled }
+        if !anyEnabled, routes.routingEnabled {
+            routes.setRoutingEnabled(false)
+        }
     }
 
     private func enableRoute(to deviceID: AudioDeviceID) {
         guard let bundleID = source.bundleIdentifier else {
             return
+        }
+        // Picking a device for a source implies split routing is wanted -
+        // the per-source picker previously showed the device label while
+        // the master switch was off, so nothing actually routed.
+        if !routes.routingEnabled {
+            routes.setRoutingEnabled(true)
         }
         routes.setOutput(
             forBundleIdentifier: bundleID,

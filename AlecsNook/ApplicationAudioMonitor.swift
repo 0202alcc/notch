@@ -616,7 +616,11 @@ final class ApplicationAudioMonitor: ObservableObject {
     /// Meters may blank for a frame during the swap.
     @MainActor
     private func reconcileTapMuteBehaviors() {
-        for (sourceID, tap) in taps {
+        // Snapshot the keys: startTap mutates `taps` (stops the old tap,
+        // stores the new one) - mutating during enumeration crashes.
+        for sourceID in Array(taps.keys) {
+            guard let tap = taps[sourceID] else { continue }
+
             let bundleID = sourceModels[sourceID]?.bundleIdentifier
             let desired = Self.desiredMuteBehavior(
                 sourceObjectID: sourceID,
