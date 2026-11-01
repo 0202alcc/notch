@@ -141,6 +141,8 @@ struct ActiveAudioSourcesView: View {
                 .fixedSize()
             }
 
+            NoiseControlSlider()
+
             if monitor.activeSources.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "speaker.slash")
@@ -177,6 +179,77 @@ struct ActiveAudioSourcesView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// AirPods noise-control slider: four discrete stops (the platform has
+/// no continuous blend - Adaptive Audio is the system's own dynamic
+/// mix). Dragging snaps to the nearest stop and presses the matching
+/// Control Center checkbox through the AX hierarchy.
+struct NoiseControlSlider: View {
+    @ObservedObject private var controller = ListeningModeController.shared
+
+    @State private var dragValue: Double?
+
+    private var model: ListeningModeModel? {
+        guard !controller.availableModes.isEmpty else { return nil }
+        return ListeningModeModel(available: controller.availableModes)
+    }
+
+    private var shownValue: Double {
+        dragValue
+            ?? controller.currentMode
+                .flatMap { model?.position(of: $0) }
+            ?? 0
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "waveform.badge.magnifyingglass")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .help("AirPods noise control")
+
+            if controller.accessibilityDenied {
+                Text("Enable AlecsNook in System Settings → Accessibility for noise control")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+            } else if let model {
+                Slider(
+                    value: Binding(
+                        get: { shownValue },
+                        set: { dragValue = $0 }
+                    ),
+                    in: 0...1
+                ) { editing in
+                    if !editing {
+                        let position = dragValue ?? shownValue
+                        if let mode = model.mode(at: position) {
+                            controller.setMode(mode)
+                        }
+                        dragValue = nil
+                    }
+                }
+                .frame(maxWidth: 170)
+
+                Text(controller.currentMode?.rawValue ?? "—")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .frame(width: 110, alignment: .leading)
+            } else {
+                Text("Noise control available when AirPods are the output")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                Spacer()
+            }
+        }
+        .onAppear {
+            controller.refresh()
+        }
     }
 }
 
