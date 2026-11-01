@@ -299,6 +299,9 @@ struct AudioSourceRow: View {
     @ObservedObject private var routes =
         RouteStore.shared
 
+    @ObservedObject private var nowPlaying =
+        NowPlayingMonitor.shared
+
     @ObservedObject var source: ApplicationAudioSourceModel
 
     /// Device-appropriate icon for the replay volume control -
@@ -334,6 +337,19 @@ struct AudioSourceRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(source.applicationName)
                     .lineLimit(1)
+
+                // Now-playing metadata: "Artist — Title" from the
+                // catalog when this app reports what it plays.
+                if let nowPlayingLine = nowPlaying.line(
+                    forBundleIdentifier: source.bundleIdentifier
+                ) {
+                    Text(nowPlayingLine)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help(nowPlayingLine)
+                        .transition(.opacity)
+                }
 
                 // Per-source replay volume - the effective volume while
                 // the source is routed (the tap mutes its normal path,

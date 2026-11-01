@@ -767,6 +767,23 @@ final class ApplicationAudioMonitor: ObservableObject {
         }
     }
 
+    /// Bundle ID → audible-right-now, straight from the per-source tap
+    /// levels. This is the "actually playing" ground truth the
+    /// now-playing catalog fuses with metadata reports.
+    func audibleBundleIdentifiers() -> [String: Bool] {
+        var result: [String: Bool] = [:]
+        for (objectID, level) in latestLevels {
+            guard
+                let bundleID = sourceModels[objectID]?.bundleIdentifier
+            else {
+                continue
+            }
+            let audible = level >= tapSettleLevelThreshold
+            result[bundleID] = (result[bundleID] ?? false) || audible
+        }
+        return result
+    }
+
     // MARK: - Sample copy
 
     /// Copies every channel of an `AudioBufferList` into a single `Float`
