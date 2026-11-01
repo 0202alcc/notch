@@ -308,6 +308,22 @@ final class OutputDeviceMonitor: ObservableObject {
                 continue
             }
 
+            // Skip this process's own tap-host aggregates. Each
+            // per-source `ProcessAudioTap` creates one ("MyNook
+            // N-Process Mix" / "MyNook Process Meter") to carry tapped
+            // process audio into AlecsNook; it is routing plumbing,
+            // never a valid output target.
+            if name.hasPrefix("MyNook ") {
+                continue
+            }
+
+            // Skip system-internal tap-host aggregates (UIDs like
+            // `~:AMS2_Aggregate:N`) that coreaudiod creates to service
+            // process taps. They carry no user-selectable output.
+            if uid.hasPrefix("~:") {
+                continue
+            }
+
             if let transport = readTransportType(deviceID: deviceID) {
                 if transport == kAudioDeviceTransportTypeVirtual {
                     continue
