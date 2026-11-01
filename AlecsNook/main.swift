@@ -69,6 +69,37 @@ struct ExpandedMicrophoneStatusIcon: View {
     }
 }
 
+/// Compact-row split-routing quick action (design decision: the picker
+/// itself lives in the expanded panel; the compact button just signals
+/// state and expands the nook on click).
+struct CompactRouteQuickButton: View {
+    @ObservedObject private var routes = RouteStore.shared
+    @Environment(\.nookSurface) private var surface
+
+    var body: some View {
+        Button {
+            Task { await surface?.expand(on: nil) }
+        } label: {
+            Image(
+                systemName: routes.routingEnabled
+                    ? "arrow.triangle.branch"
+                    : "arrow.triangle.merge"
+            )
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(
+                routes.routingEnabled ? Color.accentColor : .white.opacity(0.85)
+            )
+            .frame(width: 22, height: 24)
+        }
+        .buttonStyle(.plain)
+        .help(
+            routes.routingEnabled
+                ? "Split routing on — click to manage per-app routes"
+                : "Split routing off — sources play on the staging output"
+        )
+    }
+}
+
 struct ActiveAudioSourcesView: View {
     @ObservedObject private var monitor =
         ApplicationAudioMonitor.shared
@@ -83,6 +114,14 @@ struct ActiveAudioSourcesView: View {
                     .font(.headline)
 
                 Spacer()
+
+                Text("Staging output")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .help(
+                        "Where sources without their own route play. "
+                        + "Changing this also changes the macOS system default."
+                    )
 
                 OutputDeviceMenu()
 
@@ -168,7 +207,7 @@ struct OutputDeviceMenu: View {
                 Text("No output devices available")
             } else {
                 if !outputDevices.devices.isEmpty {
-                    Section("Devices") {
+                    Section("Staging outputs") {
                         ForEach(outputDevices.devices) { device in
                             outputDeviceButton(device)
                         }
@@ -203,11 +242,7 @@ struct OutputDeviceMenu: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help(
-            outputDevices.devices.first(where: {
-                $0.id == outputDevices.currentOutputDeviceID
-            })?.isAvailable == false
-                ? "Currently disconnected"
-                : "Switch output device"
+            "Staging output - where unrouted sources play. Also the macOS system default."
         )
     }
 
@@ -266,6 +301,24 @@ struct AudioSourceRow: View {
 
     @ObservedObject var source: ApplicationAudioSourceModel
 
+    /// Device-appropriate icon for the replay volume control -
+    /// headphones when the routed target is headphones (AirPods etc.).
+    private static func volumeIconName(
+        routes: [String: SourceRoute],
+        outputDevices: OutputDeviceMonitor,
+        bundleID: String
+    ) -> String {
+        guard let route = routes[bundleID] else {
+            return "hifispeaker.fill"
+        }
+        let device = outputDevices.devices.first(where: {
+            $0.uid == route.outputDeviceUID
+                || (route.outputDeviceUID == nil
+                    && $0.id == route.outputDeviceID)
+        })
+        return device?.symbolName ?? "hifispeaker.fill"
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             if let icon = source.applicationIcon {
@@ -278,8 +331,48 @@ struct AudioSourceRow: View {
                     .frame(width: 24, height: 24)
             }
 
-            Text(source.applicationName)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(source.applicationName)
+                    .lineLimit(1)
+
+                // Per-source replay volume - the effective volume while
+                // the source is routed (the tap mutes its normal path,
+                // so the replay player is the only audible copy).
+                if
+                    routes.routingEnabled,
+                    let bundleID = source.bundleIdentifier,
+                    routes.routes[bundleID]?.enabled == true
+                {
+                    HStack(spacing: 5) {
+                        Image(
+                            systemName: Self.volumeIconName(
+                                routes: routes.routes,
+                                outputDevices: outputDevices,
+                                bundleID: bundleID
+                            )
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        Slider(
+                            value: Binding(
+                                get: {
+                                    routes.routes[bundleID]?.volume ?? 1
+                                },
+                                set: { newValue in
+                                    routes.setVolume(
+                                        forBundleIdentifier: bundleID,
+                                        volume: newValue
+                                    )
+                                }
+                            ),
+                            in: 0...1
+                        )
+                        .frame(width: 100)
+                        .help("Volume for \(source.applicationName) on its routed output")
+                    }
+                    .transition(.opacity)
+                }
+            }
 
             Spacer()
 
@@ -323,17 +416,28 @@ struct SourceRouteMenu: View {
     }
 
     private var currentLabel: String {
-        guard
-            let route = currentRoute,
-            route.enabled,
-            let deviceID = route.outputDeviceID,
-            let device = outputDevices.devices.first(where: {
-                $0.id == deviceID
+        // Routed: the pinned device (UID-first match - the cached
+        // AudioDeviceID can go stale when a device reconnects).
+        if routes.routingEnabled, let route = currentRoute, route.enabled {
+            let device = outputDevices.devices.first(where: { device in
+                device.uid == route.outputDeviceUID
+                    || (route.outputDeviceUID == nil
+                        && device.id == route.outputDeviceID)
             })
-        else {
-            return "System"
+            return device?.name ?? "Device offline"
         }
-        return device.name
+
+        // Unrouted: the label shows the *effective* destination - the
+        // system default the top selector currently points at - so the
+        // row never names a mode when it can name the actual device.
+        return outputDevices.devices.first(where: {
+            $0.id == outputDevices.currentOutputDeviceID
+        })?.name ?? "System"
+    }
+
+    private var isRoutedToFixedDevice: Bool {
+        routes.routingEnabled
+            && currentRoute?.enabled == true
     }
 
     var body: some View {
@@ -342,57 +446,62 @@ struct SourceRouteMenu: View {
                 disableRoute()
             } label: {
                 Label(
-                    "System default",
+                    "Follow staging output",
                     systemImage: currentRoute?.enabled != true
                         ? "checkmark"
                         : "circle"
                 )
             }
+            .help(
+                "No split routing for this source - it plays on the staging output selected at the top"
+            )
 
-            Divider()
-
-            if outputDevices.devices.isEmpty {
-                Text("No output devices available")
-            } else {
-                ForEach(outputDevices.devices) { device in
-                    Button {
-                        enableRoute(to: device.id)
-                    } label: {
-                        let active =
-                            currentRoute?.enabled == true
-                            && currentRoute?.outputDeviceID
-                                == device.id
-                        if active {
-                            Label(
-                                device.name,
-                                systemImage: "checkmark"
-                            )
-                        } else if device.isAvailable {
-                            Text(device.name)
-                        } else {
-                            Label(
-                                device.name,
-                                systemImage: "wifi.exclamationmark"
-                            )
+            Section("Output devices") {
+                if outputDevices.devices.isEmpty {
+                    Text("No output devices available")
+                } else {
+                    ForEach(outputDevices.devices) { device in
+                        Button {
+                            enableRoute(to: device)
+                        } label: {
+                            let active =
+                                currentRoute?.enabled == true
+                                && (currentRoute?.outputDeviceUID == device.uid
+                                    || (currentRoute?.outputDeviceUID == nil
+                                        && currentRoute?.outputDeviceID
+                                            == device.id))
+                            if active {
+                                Label(
+                                    device.name,
+                                    systemImage: "checkmark"
+                                )
+                            } else if device.isAvailable {
+                                Text(device.name)
+                            } else {
+                                Label(
+                                    device.name,
+                                    systemImage: "wifi.exclamationmark"
+                                )
+                            }
                         }
+                        .disabled(!device.isAvailable)
                     }
-                    .disabled(!device.isAvailable)
                 }
             }
 
-            Divider()
-
-            Toggle(
-                "Per-source routing",
-                isOn: Binding(
-                    get: { routes.routingEnabled },
-                    set: { routes.setRoutingEnabled($0) }
+            Section("Split routing") {
+                Toggle(
+                    "Enabled for all sources",
+                    isOn: Binding(
+                        get: { routes.routingEnabled },
+                        set: { routes.setRoutingEnabled($0) }
+                    )
                 )
-            )
+            }
         } label: {
             HStack(spacing: 3) {
                 Image(
-                    systemName: routes.routingEnabled
+                    systemName: isRoutedToFixedDevice
                         ? "arrow.triangle.branch"
                         : "speaker.wave.2"
                 )
@@ -414,9 +523,9 @@ struct SourceRouteMenu: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help(
-            routes.routingEnabled
-                ? "Route \(source.applicationName) to a specific output"
-                : "Enable per-source routing to pick a non-default output"
+            isRoutedToFixedDevice
+                ? "Pinned to \(currentLabel) - click to change or release"
+                : "Follows the staging output (\(currentLabel)) - click to pin a device"
         )
     }
 
@@ -425,15 +534,30 @@ struct SourceRouteMenu: View {
             return
         }
         routes.setEnabled(forBundleIdentifier: bundleID, enabled: false)
+
+        // Last route gone: switch the master off too, so every tap
+        // returns to plain observation and the replay engines tear
+        // down. The reconcile sink handles the tap side.
+        let anyEnabled = routes.routes.values.contains { $0.enabled }
+        if !anyEnabled, routes.routingEnabled {
+            routes.setRoutingEnabled(false)
+        }
     }
 
-    private func enableRoute(to deviceID: AudioDeviceID) {
+    private func enableRoute(to device: OutputDevice) {
         guard let bundleID = source.bundleIdentifier else {
             return
         }
+        // Picking a device for a source implies split routing is wanted -
+        // the per-source picker previously showed the device label while
+        // the master switch was off, so nothing actually routed.
+        if !routes.routingEnabled {
+            routes.setRoutingEnabled(true)
+        }
         routes.setOutput(
             forBundleIdentifier: bundleID,
-            deviceID: deviceID
+            deviceID: device.id,
+            deviceUID: device.uid
         )
         routes.setEnabled(forBundleIdentifier: bundleID, enabled: true)
     }
@@ -584,6 +708,12 @@ struct ExpandedOutputStatusView: View {
 
 var configuration = NookConfiguration()
 
+// Pin the chrome to dark: the expanded panel should read as one continuous surface
+// with the physical notch, which is black even in light mode. `.followSystem` paints
+// solid white on a light-mode Mac, which looks broken against the real notch. This is
+// a launch seed (see NookPreferenceDefaults) - a persisted user choice always wins.
+configuration.preferenceDefaults.appearance.chromePalette = .dark
+
 configuration.setHome {
     MyNookView()
 }
@@ -593,7 +723,10 @@ configuration.setCompactLeading {
     CompactOutputStatusView()
 }
 configuration.setCompactTrailing {
-    MicrophoneStatusIcon()
+    HStack(spacing: 2) {
+        CompactRouteQuickButton()
+        MicrophoneStatusIcon()
+    }
 }
 
 // Expanded top-left

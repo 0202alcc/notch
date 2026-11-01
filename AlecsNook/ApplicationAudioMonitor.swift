@@ -10,6 +10,7 @@ import AppKit
 import Combine
 import CoreAudio
 import Foundation
+import NookKit
 import os
 
 /// Rate (Hz) at which we forward PCM samples from each tap into the
@@ -223,6 +224,15 @@ final class ApplicationAudioMonitor: ObservableObject {
     private var sourceTimer: Timer?
     private var waveformTimer: Timer?
 
+    /// Observes route changes (user picks a device, toggles a source,
+    /// flips global routing) and re-creates taps whose mute behavior no
+    /// longer matches. Debounced so menu clicks don't thrash the HAL.
+    private var routeObserverCancellable: AnyCancellable?
+
+    /// Applies per-source replay volume changes immediately (no
+    /// debounce - dragging a volume slider must be heard in real time).
+    private var volumeObserverCancellable: AnyCancellable?
+
     // Hysteresis state for source reconciliation.
     //
     // Core Audio's `kAudioProcessPropertyIsRunningOutput` is queried every
@@ -279,6 +289,34 @@ final class ApplicationAudioMonitor: ObservableObject {
         // Common mode keeps both timers running during notch hover/tracking.
         RunLoop.main.add(sourceTimer, forMode: .common)
         RunLoop.main.add(waveformTimer, forMode: .common)
+
+        routeObserverCancellable = Publishers.CombineLatest(
+            RouteStore.shared.$routes,
+            RouteStore.shared.$routingEnabled
+        )
+        .debounce(for: .milliseconds(250), scheduler: DispatchQueue.main)
+        .sink { [weak self] routes, routingEnabled in
+            guard let self else { return }
+
+            if !routingEnabled {
+                // Global switch off: every replay engine is dead weight
+                // and every tap goes back to pure observation.
+                AudioRouter.shared.teardownAll()
+            } else {
+                for (key, route) in routes where !route.enabled {
+                    AudioRouter.shared.teardownRoute(
+                        forBundleIdentifier: key
+                    )
+                }
+            }
+
+            self.reconcileTapMuteBehaviors()
+        }
+
+        volumeObserverCancellable = RouteStore.shared.$routes
+            .sink { routes in
+                AudioRouter.shared.applyVolumes(routes)
+            }
     }
 
     // MARK: - Source discovery
@@ -489,12 +527,31 @@ final class ApplicationAudioMonitor: ObservableObject {
 
         let tap = ProcessAudioTap(
             processObjectIDs: [sourceID],
+            muteBehavior: Self.desiredMuteBehavior(
+                sourceObjectID: sourceID,
+                bundleIdentifier: bundleID
+            ),
             levelHandler: { [weak self] level in
                 Task { @MainActor in
                     self?.latestLevels[sourceID] = level
                 }
             },
-            samplesHandler: { [weak self] bufferList in
+            samplesHandler: { [weak self] bufferList, frameCount, sampleRate in
+                // Forward to AudioRouter for per-source output routing
+                // FIRST and unthrottled: replay must see every buffer or
+                // the stream audibly gaps. The router consults
+                // RouteStore lock-free and returns immediately for
+                // unrouted sources, so this is near-free when routing
+                // is off.
+                AudioRouter.shared.handleSamples(
+                    fromSourceObjectID: sourceID,
+                    bundleIdentifier: bundleID,
+                    bufferList: bufferList,
+                    sampleRate: sampleRate
+                )
+
+                // Spectrum path is visualization-only and stays
+                // throttled to 30 fps.
                 let now = CFAbsoluteTimeGetCurrent()
                 let shouldForward = samplesThrottle.withLock { last in
                     if now - last >= samplesForwardInterval {
@@ -507,8 +564,6 @@ final class ApplicationAudioMonitor: ObservableObject {
 
                 let samples = Self.copySamples(from: bufferList)
 
-                // Forward to the spectrum analyzer for visualization
-                // (existing path).
                 Task { @MainActor in
                     guard let self else { return }
                     guard
@@ -516,20 +571,11 @@ final class ApplicationAudioMonitor: ObservableObject {
                     else {
                         return
                     }
-                    model.pushSamples(samples, sampleRate: 48_000)
+                    model.pushSamples(
+                        samples,
+                        sampleRate: Float(sampleRate)
+                    )
                 }
-
-                // Forward to AudioRouter for per-source output routing.
-                // The router consults RouteStore lock-free and only
-                // does work if this source has an enabled route, so
-                // the no-route case is essentially free.
-                AudioRouter.shared.handleSamples(
-                    fromSourceObjectID: sourceID,
-                    bundleIdentifier: bundleID,
-                    bufferList: bufferList,
-                    frameCount: samples.count,
-                    sampleRate: 48_000
-                )
             }
         )
 
@@ -553,6 +599,83 @@ final class ApplicationAudioMonitor: ObservableObject {
                 bundleIdentifier: bundleID,
                 applicationName: process.applicationName
             )
+        )
+    }
+
+    /// The mute behavior a source's tap should currently run with:
+    /// exclusive capture (`.mutedWhenTapped`) only when global routing
+    /// is on AND this source has an enabled route; plain observation
+    /// otherwise.
+    private static func desiredMuteBehavior(
+        sourceObjectID: AudioObjectID,
+        bundleIdentifier: String?
+    ) -> CATapMuteBehavior {
+        let store = RouteStore.shared
+        guard store.isRoutingEnabled else { return .unmuted }
+
+        let route = store.route(forSourceObjectID: sourceObjectID)
+            ?? store.route(forBundleIdentifier: bundleIdentifier)
+
+        return (route?.enabled == true) ? .mutedWhenTapped : .unmuted
+    }
+
+    /// Recreates any tap whose mute behavior no longer matches what its
+    /// route implies. `muteBehavior` is fixed at tap creation, so a
+    /// routing change requires a stop + restart of that source's tap.
+    /// Meters may blank for a frame during the swap.
+    @MainActor
+    private func reconcileTapMuteBehaviors() {
+        // Snapshot the keys: startTap mutates `taps` (stops the old tap,
+        // stores the new one) - mutating during enumeration crashes.
+        for sourceID in Array(taps.keys) {
+            guard let tap = taps[sourceID] else { continue }
+
+            let bundleID = sourceModels[sourceID]?.bundleIdentifier
+            let desired = Self.desiredMuteBehavior(
+                sourceObjectID: sourceID,
+                bundleIdentifier: bundleID
+            )
+
+            guard tap.muteBehavior != desired else { continue }
+
+            guard
+                let model = sourceModels[sourceID],
+                let process = makeDiscoveredProcess(for: model)
+            else {
+                continue
+            }
+
+            tap.stop()
+            taps.removeValue(forKey: sourceID)
+            startTap(for: process, model: model)
+        }
+    }
+
+    private func makeDiscoveredProcess(
+        for model: ApplicationAudioSourceModel
+    ) -> DiscoveredAudioProcess? {
+        guard
+            let running = NSRunningApplication(
+                processIdentifier: model.pid
+            )
+        else {
+            return DiscoveredAudioProcess(
+                processObjectID: model.processObjectID,
+                pid: model.pid,
+                bundleIdentifier: model.bundleIdentifier,
+                applicationName: model.applicationName,
+                applicationIcon: model.applicationIcon
+            )
+        }
+
+        return DiscoveredAudioProcess(
+            processObjectID: model.processObjectID,
+            pid: model.pid,
+            bundleIdentifier: model.bundleIdentifier,
+            applicationName: running.localizedName
+                ?? model.applicationName,
+            applicationIcon: running.icon
+                ?? model.applicationIcon
         )
     }
 
@@ -613,7 +736,7 @@ final class ApplicationAudioMonitor: ObservableObject {
                     self?.latestCombinedLevel = level
                 }
             },
-            samplesHandler: { [weak self] bufferList in
+            samplesHandler: { [weak self] bufferList, _, sampleRate in
                 let now = CFAbsoluteTimeGetCurrent()
                 let shouldForward = samplesThrottle.withLock { last in
                     if now - last >= samplesForwardInterval {
@@ -629,7 +752,7 @@ final class ApplicationAudioMonitor: ObservableObject {
                     guard let self else { return }
                     self.combinedSource.pushSamples(
                         samples,
-                        sampleRate: 48_000
+                        sampleRate: Float(sampleRate)
                     )
                 }
             }
