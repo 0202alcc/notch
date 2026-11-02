@@ -195,6 +195,34 @@ final class SourceEqualizerTests: XCTestCase {
         XCTAssertEqual(EQBand.high.label, "6kHz")
     }
 
+    // MARK: - Western note names
+
+    /// The A440 equal-temperament mapping: 440 Hz = A4.
+    func testNoteNamesAtReferencePitches() {
+        XCTAssertEqual(EQResponseCurveMath.noteName(forHz: 440), "A4")
+        XCTAssertEqual(EQResponseCurveMath.noteName(forHz: 261.63), "C4")
+        XCTAssertEqual(EQResponseCurveMath.noteName(forHz: 466.16), "A#4")
+        XCTAssertEqual(EQResponseCurveMath.noteName(forHz: 880), "A5")
+        XCTAssertEqual(EQResponseCurveMath.noteName(forHz: 27.5), "A0")
+    }
+
+    /// The EQ corner frequencies' nearest notes (150 Hz is ~37 cents
+    /// above D3; 1 kHz is ~21 cents above B5).
+    func testNoteNamesAtBandCorners() {
+        XCTAssertEqual(EQResponseCurveMath.noteName(forHz: 150), "D3")
+        XCTAssertEqual(EQResponseCurveMath.noteName(forHz: 1000), "B5")
+    }
+
+    /// The octave markers for the graph's axis: every A from A0 (27.5
+    /// Hz) through A9 (14080 Hz - inside the 20 kHz window).
+    func testOctaveMarkers() {
+        let markers = EQResponseCurveMath.octaveMarkers()
+        let names = markers.map(\.name)
+        XCTAssertEqual(names, ["A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9"])
+        XCTAssertEqual(markers.first?.frequencyHz ?? 0, 27.5, accuracy: 0.1)
+        XCTAssertEqual(markers.last?.frequencyHz ?? 0, 14080, accuracy: 0.1)
+    }
+
     /// Knob position (0...1) maps linearly to -12...+12 dB, 0.5 = flat.
     func testKnobPositionMapping() {
         XCTAssertEqual(EQBand.db(forKnobPosition: 0.0), -12)

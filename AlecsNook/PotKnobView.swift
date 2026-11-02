@@ -46,6 +46,54 @@ struct EQResponseCurveView: View {
                     style: StrokeStyle(lineWidth: 0.75, dash: [3, 3])
                 )
 
+                // Western-scale axis: A-octave markers (A0..A9).
+                let logMin = log10(EQResponseCurveMath.minFrequencyHz)
+                let logMax = log10(EQResponseCurveMath.maxFrequencyHz)
+                func xFor(_ f: Double) -> CGFloat {
+                    let t = (log10(f) - logMin) / (logMax - logMin)
+                    return CGFloat(t) * w
+                }
+                for marker in EQResponseCurveMath.octaveMarkers() {
+                    let x = xFor(marker.frequencyHz)
+                    var tick = Path()
+                    tick.move(to: CGPoint(x: x, y: zeroY - 3))
+                    tick.addLine(to: CGPoint(x: x, y: zeroY + 3))
+                    context.stroke(
+                        tick,
+                        with: .color(Color.secondary.opacity(0.4)),
+                        lineWidth: 0.75
+                    )
+                    context.draw(
+                        Text(marker.name)
+                            .font(.system(size: 6, weight: .medium))
+                            .foregroundStyle(Color.secondary.opacity(0.75)),
+                        at: CGPoint(x: x, y: h - 6)
+                    )
+                }
+
+                // The three band corners, with their nearest notes.
+                for (band, note) in [
+                    (EQBand.low, EQResponseCurveMath.noteName(forHz: 150)),
+                    (EQBand.mid, EQResponseCurveMath.noteName(forHz: 1000)),
+                    (EQBand.high, EQResponseCurveMath.noteName(forHz: 6000)),
+                ] {
+                    let x = xFor(band.frequencyHzValue)
+                    var tick = Path()
+                    tick.move(to: CGPoint(x: x, y: 2))
+                    tick.addLine(to: CGPoint(x: x, y: zeroY - 4))
+                    context.stroke(
+                        tick,
+                        with: .color(Color.accentColor.opacity(0.5)),
+                        lineWidth: 0.75
+                    )
+                    context.draw(
+                        Text(note)
+                            .font(.system(size: 6, weight: .semibold))
+                            .foregroundStyle(Color.accentColor.opacity(0.85)),
+                        at: CGPoint(x: x, y: 7)
+                    )
+                }
+
                 // Filled area between the curve and the 0 dB line.
                 var area = Path()
                 var line = Path()
@@ -74,9 +122,9 @@ struct EQResponseCurveView: View {
                 )
             }
         }
-        .frame(height: 34)
+        .frame(height: 42)
         .clipShape(RoundedRectangle(cornerRadius: 4))
-        .help("Live EQ response of this source: how the knobs reshape the spectrum")
+        .help("Live EQ response of this source: how the knobs reshape the spectrum - axis marked in Western note names (A octaves)")
     }
 }
 

@@ -62,6 +62,40 @@ public enum EQResponseCurveMath {
         return 20 * log10(max(magnitude, 1e-6))
     }
 
+    // MARK: - Western note names (A440 equal temperament)
+
+    public struct NoteMarker: Equatable, Sendable {
+        public let frequencyHz: Double
+        public let name: String
+    }
+
+    private static let pitchNames = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ]
+
+    /// Nearest Western note name for a frequency (A440, equal
+    /// temperament): MIDI = 69 + 12·log2(f/440).
+    public static func noteName(forHz f: Double) -> String {
+        let midi = Int((69 + 12 * log2(f / 440)).rounded())
+        let pitch = pitchNames[((midi % 12) + 12) % 12]
+        let octave = midi / 12 - 1
+        return "\(pitch)\(octave)"
+    }
+
+    /// Axis markers: every A octave inside the curve's frequency
+    /// window (A0 27.5 Hz ... A8 7040 Hz).
+    public static func octaveMarkers() -> [NoteMarker] {
+        var markers: [NoteMarker] = []
+        for octave in 0...10 {
+            let f = 27.5 * pow(2, Double(octave)) // A0 = 27.5 Hz
+            guard f >= minFrequencyHz, f <= maxFrequencyHz else { continue }
+            markers.append(
+                NoteMarker(frequencyHz: f, name: "A\(octave)")
+            )
+        }
+        return markers
+    }
+
     // MARK: - RBJ cookbook coefficients
 
     private struct Biquad {
