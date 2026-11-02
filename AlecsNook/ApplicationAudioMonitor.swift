@@ -53,9 +53,23 @@ final class ApplicationAudioSourceModel: ObservableObject, Identifiable {
     @Published private(set) var waveform: [Float]
     @Published private(set) var spectrum: [Float]
 
+    /// 32 log-spaced magnitudes (0...1) for the EQ graph's live
+    /// frequency columns.
+    @Published private(set) var eqSpectrum: [Float] = Array(
+        repeating: 0, count: 32
+    )
+
     private let analyzer = AudioSpectrumAnalyzer(
         windowSize: 1024,
         binCount: 10
+    )
+
+    /// Higher-resolution log-spaced spectrum feeding the EQ graph's
+    /// live "dominant frequency" columns (separate instance = separate
+    /// attack/release smoothing from the row's mini-spectrum).
+    private let eqAnalyzer = AudioSpectrumAnalyzer(
+        windowSize: 1024,
+        binCount: 32
     )
 
     init(
@@ -111,13 +125,20 @@ final class ApplicationAudioSourceModel: ObservableObject, Identifiable {
     }
 
     /// Runs an STFT over the supplied PCM samples and publishes the
-    /// resulting magnitude bins as `spectrum`.
+    /// resulting magnitude bins as `spectrum` (10-bin row display) and
+    /// `eqSpectrum` (32-bin EQ graph columns).
     func pushSamples(_ samples: [Float], sampleRate: Float) {
         let bins = analyzer.analyze(
             samples: samples,
             sampleRate: sampleRate
         )
         spectrum = bins
+
+        let eqBins = eqAnalyzer.analyze(
+            samples: samples,
+            sampleRate: sampleRate
+        )
+        eqSpectrum = eqBins
     }
 }
 

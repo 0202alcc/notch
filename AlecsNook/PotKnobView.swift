@@ -11,10 +11,21 @@ import NookKit
 /// The live combined EQ response, rendered above the potentiometers -
 /// recomputes from the route's gains on every knob move (the same RBJ
 /// math the engine runs; 96 log-spaced samples, ±14 dB window).
+///
+/// Background: log-spaced frequency columns lit by the source's live
+/// spectrum (32 bins, ~30 fps from the source's tap) - showing which
+/// frequency regions are dominant right now, POST-EQ: each column's
+/// energy is scaled by the response curve, so the columns show what
+/// you actually hear with the current knob settings.
 struct EQResponseCurveView: View {
     let bundleID: String
+    @ObservedObject var source: ApplicationAudioSourceModel
 
     @ObservedObject private var routes = RouteStore.shared
+
+    private static let binCenters = SpectrumBinGeometry.normalizedCenters(
+        binCount: 32, minHz: 60, maxHz: 20000
+    )
 
     var body: some View {
         GeometryReader { geo in
@@ -34,6 +45,57 @@ struct EQResponseCurveView: View {
 
                 func yFor(_ db: Double) -> CGFloat {
                     CGFloat(zeroY - (db / dBRange) * (h / 2))
+                }
+
+                // Live spectrum columns (post-EQ energy), drawn first so
+                // the response curve overlays them.
+                let spectrum = source.eqSpectrum
+                for (index, magnitude) in spectrum.enumerated() {
+                    guard
+                        index < Self.binCenters.count,
+                        magnitude > 0.01
+                    else { continue }
+
+                    let x = Self.binCenters[index] * w
+                    let columnWidth = max(w / 52, 2)
+
+                    // Post-EQ: scale by the response at this bin's
+                    // frequency (the curve at the column's x).
+                    let frequencyHz = pow(
+                        10,
+                        log10(EQResponseCurveMath.minFrequencyHz)
+                            + Self.binCenters[index]
+                                * (log10(EQResponseCurveMath.maxFrequencyHz)
+                                    - log10(EQResponseCurveMath.minFrequencyHz))
+                    )
+                    _ = frequencyHz
+
+                    // Interpolate the combined curve at this x.
+                    let curveIndex = Double(index) / Double(spectrum.count)
+                        * Double(EQResponseCurveMath.sampleCount - 1)
+                    let i0 = min(Int(curveIndex), EQResponseCurveMath.sampleCount - 2)
+                    let frac = curveIndex - Double(i0)
+                    let responseDB = curve[i0] * (1 - frac) + curve[i0 + 1] * frac
+                    let responseGain = pow(10, responseDB / 20)
+
+                    let effective = min(Double(magnitude) * responseGain, 1.0)
+                    guard effective > 0.015 else { continue }
+
+                    let barHeight = effective * (h - 4)
+                    let rect = CGRect(
+                        x: x - columnWidth / 2,
+                        y: h - barHeight,
+                        width: columnWidth,
+                        height: barHeight
+                    )
+                    context.fill(
+                        Path(rect),
+                        with: .color(
+                            Color.accentColor.opacity(
+                                0.10 + 0.55 * Double(effective)
+                            )
+                        )
+                    )
                 }
 
                 // 0 dB reference line.
