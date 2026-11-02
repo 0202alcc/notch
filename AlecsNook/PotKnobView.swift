@@ -85,13 +85,24 @@ struct PotKnob: View {
             .gesture(
                 DragGesture(minimumDistance: 1)
                     .onChanged { value in
+                        // Horizontal drag = spinning the pot. The
+                        // indicator rotation tracks the drag 1:1
+                        // (degrees per point), clamped at the physical
+                        // end-stops (-135...+135).
                         if dragStartDB == nil {
                             dragStartDB = db
                         }
-                        // 100pt of vertical travel = the full range.
-                        let delta = -Double(value.translation.height) / 100.0
-                            * (EQBand.maxDB - EQBand.minDB)
-                        db = EQBand.clampDB((dragStartDB ?? 0) + delta)
+                        let sweep = Self.sweepDegrees
+                        let startAngle =
+                            -sweep / 2
+                            + EQBand.knobPosition(forDB: dragStartDB ?? 0)
+                                * sweep
+                        let newAngle = min(
+                            max(startAngle + Double(value.translation.width), -sweep / 2),
+                            sweep / 2
+                        )
+                        let position = (newAngle + sweep / 2) / sweep
+                        db = EQBand.db(forKnobPosition: position)
                     }
                     .onEnded { _ in
                         dragStartDB = nil
