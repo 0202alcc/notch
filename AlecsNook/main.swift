@@ -440,42 +440,61 @@ struct AudioSourceRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
-            if let icon = source.applicationIcon {
-                Image(nsImage: icon)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 24, height: 24)
-            } else {
-                Image(systemName: "app")
-                    .frame(width: 24, height: 24)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(source.applicationName)
-                    .lineLimit(1)
-
-                // Now-playing metadata: "Artist — Title" from the
-                // catalog when this app reports what it plays.
-                if let nowPlayingLine = nowPlaying.line(
-                    forBundleIdentifier: source.bundleIdentifier
-                ) {
-                    Text(nowPlayingLine)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .help(nowPlayingLine)
-                        .transition(.opacity)
+        VStack(alignment: .leading, spacing: 7) {
+            // Top edge: identity + route picker + waveform.
+            HStack(alignment: .top, spacing: 10) {
+                if let icon = source.applicationIcon {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 24, height: 24)
+                } else {
+                    Image(systemName: "app")
+                        .frame(width: 24, height: 24)
                 }
 
-                // Per-source replay volume + EQ potentiometers. Always
-                // visible; controls on an UNROUTED source auto-pin it to
-                // the current staging output on first touch (the replay
-                // path is the only audio we can shape).
-                if let bundleID = source.bundleIdentifier {
-                    let isRouted = routes.routingEnabled
-                        && routes.routes[bundleID]?.enabled == true
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(source.applicationName)
+                        .lineLimit(1)
 
+                    // Now-playing metadata: "Artist — Title" from the
+                    // catalog when this app reports what it plays.
+                    if let nowPlayingLine = nowPlaying.line(
+                        forBundleIdentifier: source.bundleIdentifier
+                    ) {
+                        Text(nowPlayingLine)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .help(nowPlayingLine)
+                            .transition(.opacity)
+                    }
+                }
+
+                Spacer()
+
+                SourceRouteMenu(source: source)
+
+                switch monitor.waveformStyle {
+                case .timeDomain:
+                    MiniAudioWaveform(
+                        levels: source.waveform
+                    )
+                case .frequencyDomain:
+                    MiniAudioSpectrum(
+                        spectrum: source.spectrum
+                    )
+                }
+            }
+
+            // Controls row + the EQ graph, spanning (nearly) the full
+            // row width: the route menu and waveform moved up free the
+            // width below for the visualization.
+            if let bundleID = source.bundleIdentifier {
+                let isRouted = routes.routingEnabled
+                    && routes.routes[bundleID]?.enabled == true
+
+                HStack(spacing: 12) {
                     HStack(spacing: 5) {
                         Image(
                             systemName: Self.volumeIconName(
@@ -507,39 +526,21 @@ struct AudioSourceRow: View {
                                 ? "Volume for \(source.applicationName) on its routed output"
                                 : "Drag to route \(source.applicationName) to the staging output and control its volume"
                         )
-                        .opacity(isRouted ? 1 : 0.55)
                     }
-                    .transition(.opacity)
-
-                    // The three-band EQ potentiometers (lows/mids/highs)
-                    // - shapes only this source's replayed audio - with
-                    // the live frequency response above them.
-                    EQResponseCurveView(bundleID: bundleID, source: source)
-                        .opacity(isRouted ? 1 : 0.55)
-                        .transition(.opacity)
+                    .opacity(isRouted ? 1 : 0.55)
 
                     SourceEQKnobs(
                         bundleID: bundleID,
                         ensureRouted: { ensureRouted() }
                     )
                     .opacity(isRouted ? 1 : 0.55)
-                    .transition(.opacity)
                 }
-            }
+                .padding(.leading, 34)
+                .transition(.opacity)
 
-            Spacer()
-
-            SourceRouteMenu(source: source)
-
-            switch monitor.waveformStyle {
-            case .timeDomain:
-                MiniAudioWaveform(
-                    levels: source.waveform
-                )
-            case .frequencyDomain:
-                MiniAudioSpectrum(
-                    spectrum: source.spectrum
-                )
+                EQResponseCurveView(bundleID: bundleID, source: source)
+                    .opacity(isRouted ? 1 : 0.55)
+                    .transition(.opacity)
             }
         }
     }
