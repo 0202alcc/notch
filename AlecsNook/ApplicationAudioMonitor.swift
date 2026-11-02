@@ -72,6 +72,10 @@ final class ApplicationAudioSourceModel: ObservableObject, Identifiable {
         binCount: 32
     )
 
+    /// Analysis-side focus processor - mirrors the replay path's
+    /// mid/side mode so the row's visualizations show post-focus audio.
+    private var focusProcessor = StereoFocusProcessor(sampleRate: 48_000)
+
     init(
         processObjectID: AudioObjectID,
         pid: pid_t,
@@ -127,7 +131,26 @@ final class ApplicationAudioSourceModel: ObservableObject, Identifiable {
     /// Runs an STFT over the supplied PCM samples and publishes the
     /// resulting magnitude bins as `spectrum` (10-bin row display) and
     /// `eqSpectrum` (32-bin EQ graph columns).
-    func pushSamples(_ samples: [Float], sampleRate: Float) {
+    ///
+    /// The samples are analyzed AFTER focus processing - the row's
+    /// visualizations show what the listener hears with the current
+    /// vocal/instrumental mode, matching the replay path.
+    func pushSamples(
+        planar inputChannels: [[Float]],
+        sampleRate: Float
+    ) {
+        var channels = inputChannels
+        focusProcessor.mode = AudioRouter.shared.focusModes[
+            bundleIdentifier ?? ""
+        ] ?? .full
+        focusProcessor.process(
+            &channels,
+            sampleRate: Double(sampleRate)
+        )
+
+        // The analyzer expects channel-back-to-back layout.
+        let samples = channels.flatMap { $0 }
+
         let bins = analyzer.analyze(
             samples: samples,
             sampleRate: sampleRate
@@ -584,7 +607,12 @@ final class ApplicationAudioMonitor: ObservableObject {
                 }
                 guard shouldForward else { return }
 
-                let samples = Self.copySamples(from: bufferList)
+                // Planar extraction once; the analysis path consumes the
+                // channel-separated samples (focus-aware), matching the
+                // replay path's processing.
+                let (planarChannels, _) = AudioBufferListMath.planarChannels(
+                    of: bufferList
+                )
 
                 Task { @MainActor in
                     guard let self else { return }
@@ -594,7 +622,7 @@ final class ApplicationAudioMonitor: ObservableObject {
                         return
                     }
                     model.pushSamples(
-                        samples,
+                        planar: planarChannels,
                         sampleRate: Float(sampleRate)
                     )
                 }

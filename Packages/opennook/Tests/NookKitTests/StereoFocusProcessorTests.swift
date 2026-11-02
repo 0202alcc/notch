@@ -9,18 +9,28 @@ import XCTest
 
 @testable import NookKit
 
-/// Scratch tests for the mid/side focus processor (vocal / instrumental
-/// isolation buttons).
+/// Scratch tests for the band-aware mid/side focus processor (vocal /
+/// instrumental isolation buttons).
 ///
-/// The math: mid = (L+R)/2 (center-panned content, where vocals live),
-/// side = (L-R)/2 (stereo-width content). "Instrumental" additionally
-/// restores the low end (kick/bass are center-panned) via a one-pole
-/// lowpass on the mid channel.
+/// Semantics: below the 300 Hz crossover the original stereo signal
+/// passes untouched (kick/bass survive every mode); above it, vocal
+/// mode keeps the center (mid) and instrumental mode keeps the sides
+/// (L-R). Measurements use settled signal tails.
 final class StereoFocusProcessorTests: XCTestCase {
     private let fs: Double = 48_000
 
+    private func tone(_ hz: Double, count: Int = 4096, amplitude: Float = 1) -> [Float] {
+        (0..<count).map { i -> Float in
+            amplitude * sin(Float(2 * .pi * hz * Double(i) / fs))
+        }
+    }
+
     private func stereo(_ l: [Float], _ r: [Float]) -> [[Float]] {
         [l, r]
+    }
+
+    private func peak(_ samples: [Float], tail: Int = 2048) -> Float {
+        samples.suffix(tail).map { abs($0) }.max() ?? 0
     }
 
     // MARK: - Full passthrough
@@ -35,105 +45,108 @@ final class StereoFocusProcessorTests: XCTestCase {
         XCTAssertEqual(channels, original)
     }
 
-    // MARK: - Vocal isolation (mid)
+    // MARK: - Vocal mode
 
-    func testVocalsCollapseToCenterMono() {
+    /// Center content in the vocal band passes through unchanged
+    /// (L == R means the band split cancels: low + high-mid = original).
+    func testVocalsKeepCenterVocalBand() {
         var processor = StereoFocusProcessor(sampleRate: fs)
         processor.mode = .vocals
 
-        var channels = stereo([1.0, 1.0, 1.0], [-1.0, 1.0, -1.0])
+        let tone = tone(1000)
+        var channels = stereo(tone, tone)
         processor.process(&channels, sampleRate: fs)
 
-        // mid = (L+R)/2: [0, 1, 0] - both output channels carry it.
-        XCTAssertEqual(channels[0], [0, 1, 0])
-        XCTAssertEqual(channels[1], [0, 1, 0])
+        XCTAssertEqual(peak(channels[0]), 1, accuracy: 0.15)
+        XCTAssertEqual(peak(channels[1]), 1, accuracy: 0.15)
     }
 
-    /// A mono (L==R) signal is unchanged in vocal mode - the center IS
-    /// the whole signal.
-    func testVocalsLeavesMonoContentIntact() {
+    /// Hard-panned content in the vocal band is largely removed (only
+    /// the gentle lowpass's bleed remains).
+    func testVocalsRemoveHardPannedVocalBand() {
         var processor = StereoFocusProcessor(sampleRate: fs)
         processor.mode = .vocals
 
-        var channels = stereo([0.3, 0.7, -0.5], [0.3, 0.7, -0.5])
+        let tone = tone(1000)
+        var channels = stereo(tone, tone.map { -$0 })
         processor.process(&channels, sampleRate: fs)
 
-        XCTAssertEqual(channels[0], [0.3, 0.7, -0.5])
-        XCTAssertEqual(channels[1], [0.3, 0.7, -0.5])
+        XCTAssertLessThan(peak(channels[0]), 0.25)
     }
 
-    // MARK: - Instrumental isolation (side)
+    /// Low frequencies survive vocal mode even hard-panned - the kick
+    /// and bass keep their original stereo image.
+    func testVocalsKeepTheLowEnd() {
+        var processor = StereoFocusProcessor(sampleRate: fs)
+        processor.mode = .vocals
 
-    /// Hard-panned content (pure side) survives instrumental mode.
+        let bass = tone(50)
+        var channels = stereo(bass, bass.map { -$0 })
+        processor.process(&channels, sampleRate: fs)
+
+        XCTAssertGreaterThan(peak(channels[0]), 0.8)
+    }
+
+    // MARK: - Instrumental mode
+
+    /// Center content in the vocal band cancels (classic karaoke).
+    func testInstrumentalCancelsCenterVocalBand() {
+        var processor = StereoFocusProcessor(sampleRate: fs)
+        processor.mode = .instrumental
+
+        let tone = tone(1000)
+        var channels = stereo(tone, tone)
+        processor.process(&channels, sampleRate: fs)
+
+        XCTAssertLessThan(peak(channels[0]), 0.25)
+    }
+
+    /// Hard-panned vocal-band content survives (the sides stay).
     func testInstrumentalKeepsHardPannedContent() {
         var processor = StereoFocusProcessor(sampleRate: fs)
         processor.mode = .instrumental
 
-        // Pure side: L = +x, R = -x.
-        var channels = stereo([1.0, 1.0], [-1.0, -1.0])
+        let tone = tone(1000)
+        var channels = stereo(tone, tone.map { -$0 })
         processor.process(&channels, sampleRate: fs)
 
-        // side = (L-R)/2 = 1.0; out_L = +side, out_R = -side.
-        XCTAssertEqual(channels[0], [1.0, 1.0])
-        XCTAssertEqual(channels[1], [-1.0, -1.0])
+        XCTAssertGreaterThan(peak(channels[0]), 0.7)
     }
 
-    /// Center content (L == R) cancels in instrumental mode... except
-    /// the low end, which is restored so kick/bass survive the karaoke
-    /// cancellation.
-    func testInstrumentalCancelsCenterHighsButRestoresBass() {
+    /// Center bass survives the karaoke cancellation (the whole point
+    /// of the crossover).
+    func testInstrumentalKeepsCenterBass() {
         var processor = StereoFocusProcessor(sampleRate: fs)
         processor.mode = .instrumental
 
-        // A center tone at 2 kHz (well above the bass-restore lowpass):
-        // must cancel to ~0.
-        let n = 512
-        let highTone = (0..<n).map { i -> Float in
-            sin(Float(2 * .pi * 2000 * Double(i) / fs))
-        }
-        var channels = stereo(highTone, highTone)
+        let bass = tone(50)
+        var channels = stereo(bass, bass)
         processor.process(&channels, sampleRate: fs)
 
-        let peak = channels[0].map { abs($0) }.max() ?? 1
-        XCTAssertLessThan(peak, 0.05, "2 kHz center content must cancel")
-
-        // A center tone at 40 Hz (below the restore lowpass): must
-        // survive the bass restore.
-        let bassTone = (0..<n).map { i -> Float in
-            sin(Float(2 * .pi * 40 * Double(i) / fs))
-        }
-        var bassChannels = stereo(bassTone, bassTone)
-        processor.process(&bassChannels, sampleRate: fs)
-
-        let bassPeak = bassChannels[0].suffix(256).map { abs($0) }.max() ?? 0
-        XCTAssertGreaterThan(bassPeak, 0.3, "40 Hz center content must survive")
+        XCTAssertGreaterThan(peak(channels[0]), 0.8)
     }
 
-    // MARK: - Mode switching mid-stream
+    // MARK: - State across buffers
 
-    /// The lowpass state persists across buffers (no clicks when
-    /// switching modes mid-song).
+    /// The split filters carry state across buffer boundaries - the
+    /// second buffer is already warmed up (no cold-start dip).
     func testProcessorStatePersistsAcrossCalls() {
         var processor = StereoFocusProcessor(sampleRate: fs)
         processor.mode = .instrumental
 
-        let tone = (0..<512).map { i -> Float in
-            sin(Float(2 * .pi * 40 * Double(i) / fs))
-        }
-        var first = stereo(tone, tone)
+        let bass = tone(50)
+        var first = stereo(bass, bass)
         processor.process(&first, sampleRate: fs)
-        let firstTail = first[0].suffix(64).map { abs($0) }.max() ?? 0
+        let firstPeak = peak(first[0])
 
-        var second = stereo(tone, tone)
+        var second = stereo(bass, bass)
         processor.process(&second, sampleRate: fs)
-        let secondTail = second[0].suffix(64).map { abs($0) }.max() ?? 0
+        let secondPeak = peak(second[0])
 
-        // The second buffer's tail should be at least as strong (the
-        // lowpass state carried over rather than restarting cold).
-        XCTAssertGreaterThanOrEqual(secondTail, firstTail * 0.9)
+        XCTAssertGreaterThanOrEqual(secondPeak, firstPeak * 0.98)
     }
 
-    // MARK: - Mono input edge case
+    // MARK: - Mono edge case
 
     /// A single-channel source has no stereo image - focus modes pass
     /// it through unchanged rather than mangling it.
