@@ -8,6 +8,78 @@
 import SwiftUI
 import NookKit
 
+/// The live combined EQ response, rendered above the potentiometers -
+/// recomputes from the route's gains on every knob move (the same RBJ
+/// math the engine runs; 96 log-spaced samples, ±14 dB window).
+struct EQResponseCurveView: View {
+    let bundleID: String
+
+    @ObservedObject private var routes = RouteStore.shared
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+            let route = routes.routes[bundleID]
+            let curve = EQResponseCurveMath.combinedResponseDB(
+                low: route?.eqLowDB ?? 0,
+                mid: route?.eqMidDB ?? 0,
+                high: route?.eqHighDB ?? 0
+            )
+
+            Canvas { context, _ in
+                let zeroY = h / 2
+                let dBRange = 28.0 // ±14 dB visible
+                let stepX = w / Double(EQResponseCurveMath.sampleCount - 1)
+
+                func yFor(_ db: Double) -> CGFloat {
+                    CGFloat(zeroY - (db / dBRange) * (h / 2))
+                }
+
+                // 0 dB reference line.
+                var zero = Path()
+                zero.move(to: CGPoint(x: 0, y: zeroY))
+                zero.addLine(to: CGPoint(x: w, y: zeroY))
+                context.stroke(
+                    zero,
+                    with: .color(Color.secondary.opacity(0.3)),
+                    style: StrokeStyle(lineWidth: 0.75, dash: [3, 3])
+                )
+
+                // Filled area between the curve and the 0 dB line.
+                var area = Path()
+                var line = Path()
+                for (index, db) in curve.enumerated() {
+                    let point = CGPoint(x: CGFloat(index) * stepX, y: yFor(db))
+                    if index == 0 {
+                        area.move(to: point)
+                        line.move(to: point)
+                    } else {
+                        area.addLine(to: point)
+                        line.addLine(to: point)
+                    }
+                }
+                area.addLine(to: CGPoint(x: w, y: zeroY))
+                area.addLine(to: CGPoint(x: 0, y: zeroY))
+                area.closeSubpath()
+
+                context.fill(
+                    area,
+                    with: .color(Color.accentColor.opacity(0.28))
+                )
+                context.stroke(
+                    line,
+                    with: .color(Color.accentColor),
+                    style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round)
+                )
+            }
+        }
+        .frame(height: 34)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .help("Live EQ response of this source: how the knobs reshape the spectrum")
+    }
+}
+
 /// Three rotary potentiometers (lows / mids / highs) for one routed
 /// source. Drag up/down to change gain (-12...+12 dB); double-tap
 /// resets the knob to flat.

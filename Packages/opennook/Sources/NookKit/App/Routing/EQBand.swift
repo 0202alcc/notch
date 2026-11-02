@@ -19,12 +19,17 @@ public enum EQBand: String, CaseIterable, Codable, Sendable {
     case high
 
     /// Center/corner frequency in Hz.
-    public var frequencyHz: Float {
+    public var frequencyHzValue: Double {
         switch self {
         case .low: return 150
         case .mid: return 1_000
         case .high: return 6_000
         }
+    }
+
+    /// Center/corner frequency in Hz (AVAudioUnitEQ uses Float).
+    public var frequencyHz: Float {
+        Float(frequencyHzValue)
     }
 
     /// Compact frequency label for the knob (kHz-compressed).

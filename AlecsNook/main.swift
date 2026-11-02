@@ -512,13 +512,18 @@ struct AudioSourceRow: View {
                     .transition(.opacity)
 
                     // The three-band EQ potentiometers (lows/mids/highs)
-                    // - shapes only this source's replayed audio.
+                    // - shapes only this source's replayed audio - with
+                    // the live frequency response above them.
+                    EQResponseCurveView(bundleID: bundleID)
+                        .opacity(isRouted ? 1 : 0.55)
+                        .transition(.opacity)
+
                     SourceEQKnobs(
                         bundleID: bundleID,
                         ensureRouted: { ensureRouted() }
                     )
-                        .opacity(isRouted ? 1 : 0.55)
-                        .transition(.opacity)
+                    .opacity(isRouted ? 1 : 0.55)
+                    .transition(.opacity)
                 }
             }
 
