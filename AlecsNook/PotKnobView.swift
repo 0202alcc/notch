@@ -13,6 +13,7 @@ import NookKit
 /// resets the knob to flat.
 struct SourceEQKnobs: View {
     let bundleID: String
+    let ensureRouted: () -> Void
 
     @ObservedObject private var routes = RouteStore.shared
 
@@ -36,6 +37,7 @@ struct SourceEQKnobs: View {
                 }
             },
             set: { newValue in
+                ensureRouted()
                 routes.setEqualizer(
                     forBundleIdentifier: bundleID,
                     band: band,

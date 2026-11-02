@@ -395,6 +395,32 @@ struct AudioSourceRow: View {
 
     @ObservedObject var source: ApplicationAudioSourceModel
 
+    /// Pins the source to the current staging output and enables
+    /// routing - invoked when the user touches volume/EQ on an
+    /// unrouted source. Auto-pinning gives instant, functional
+    /// controls: the source stops "following" the staging output and
+    /// becomes pinned to the device it currently plays through.
+    private func ensureRouted() {
+        guard let bundleID = source.bundleIdentifier else { return }
+        let isRouted = routes.routingEnabled
+            && routes.routes[bundleID]?.enabled == true
+        guard !isRouted else { return }
+
+        let stagingID = outputDevices.currentOutputDeviceID
+        let stagingUID = outputDevices.devices
+            .first(where: { $0.id == stagingID })?.uid
+
+        if !routes.routingEnabled {
+            routes.setRoutingEnabled(true)
+        }
+        routes.setOutput(
+            forBundleIdentifier: bundleID,
+            deviceID: stagingID,
+            deviceUID: stagingUID
+        )
+        routes.setEnabled(forBundleIdentifier: bundleID, enabled: true)
+    }
+
     /// Device-appropriate icon for the replay volume control -
     /// headphones when the routed target is headphones (AirPods etc.).
     private static func volumeIconName(
@@ -442,14 +468,14 @@ struct AudioSourceRow: View {
                         .transition(.opacity)
                 }
 
-                // Per-source replay volume - the effective volume while
-                // the source is routed (the tap mutes its normal path,
-                // so the replay player is the only audible copy).
-                if
-                    routes.routingEnabled,
-                    let bundleID = source.bundleIdentifier,
-                    routes.routes[bundleID]?.enabled == true
-                {
+                // Per-source replay volume + EQ potentiometers. Always
+                // visible; controls on an UNROUTED source auto-pin it to
+                // the current staging output on first touch (the replay
+                // path is the only audio we can shape).
+                if let bundleID = source.bundleIdentifier {
+                    let isRouted = routes.routingEnabled
+                        && routes.routes[bundleID]?.enabled == true
+
                     HStack(spacing: 5) {
                         Image(
                             systemName: Self.volumeIconName(
@@ -466,6 +492,7 @@ struct AudioSourceRow: View {
                                     routes.routes[bundleID]?.volume ?? 1
                                 },
                                 set: { newValue in
+                                    ensureRouted()
                                     routes.setVolume(
                                         forBundleIdentifier: bundleID,
                                         volume: newValue
@@ -475,13 +502,22 @@ struct AudioSourceRow: View {
                             in: 0...1
                         )
                         .frame(width: 100)
-                        .help("Volume for \(source.applicationName) on its routed output")
+                        .help(
+                            isRouted
+                                ? "Volume for \(source.applicationName) on its routed output"
+                                : "Drag to route \(source.applicationName) to the staging output and control its volume"
+                        )
+                        .opacity(isRouted ? 1 : 0.55)
                     }
                     .transition(.opacity)
 
                     // The three-band EQ potentiometers (lows/mids/highs)
                     // - shapes only this source's replayed audio.
-                    SourceEQKnobs(bundleID: bundleID)
+                    SourceEQKnobs(
+                        bundleID: bundleID,
+                        ensureRouted: { ensureRouted() }
+                    )
+                        .opacity(isRouted ? 1 : 0.55)
                         .transition(.opacity)
                 }
             }
