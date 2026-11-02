@@ -393,6 +393,8 @@ struct AudioSourceRow: View {
     @ObservedObject private var nowPlaying =
         NowPlayingMonitor.shared
 
+    @ObservedObject private var audioRouter = AudioRouter.shared
+
     @ObservedObject var source: ApplicationAudioSourceModel
 
     /// Pins the source to the current staging output and enables
@@ -532,6 +534,25 @@ struct AudioSourceRow: View {
                     SourceEQKnobs(
                         bundleID: bundleID,
                         ensureRouted: { ensureRouted() }
+                    )
+                    .opacity(isRouted ? 1 : 0.55)
+
+                    // Vocal / instrumental isolation - auto-pins an
+                    // unrouted source too (the processing lives in the
+                    // replay chain).
+                    FocusButtons(
+                        mode: Binding(
+                            get: {
+                                audioRouter.focusModes[bundleID] ?? .full
+                            },
+                            set: { newMode in
+                                ensureRouted()
+                                audioRouter.setFocusMode(
+                                    newMode,
+                                    forBundleIdentifier: bundleID
+                                )
+                            }
+                        )
                     )
                     .opacity(isRouted ? 1 : 0.55)
                 }

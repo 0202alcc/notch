@@ -8,6 +8,56 @@
 import SwiftUI
 import NookKit
 
+/// Vocal / instrumental isolation buttons for one routed source.
+/// Clicking the active one returns to full stereo. These drive the
+/// mid/side focus processing in the replay engine.
+struct FocusButtons: View {
+    @Binding var mode: SourceFocusMode
+
+    var body: some View {
+        HStack(spacing: 4) {
+            focusButton(
+                icon: "microphone",
+                help: "Isolate vocals (center-channel extraction)",
+                target: .vocals
+            )
+            focusButton(
+                icon: "music.note",
+                help: "Isolate instrumentals (vocal cancellation)",
+                target: .instrumental
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func focusButton(
+        icon: String,
+        help: String,
+        target: SourceFocusMode
+    ) -> some View {
+        let active = mode == target
+        Button {
+            // Clicking the active focus toggles back to full stereo.
+            mode = active ? .full : target
+        } label: {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(active ? Color.white : Color.secondary)
+                .frame(width: 22, height: 20)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(
+                            active
+                                ? Color.accentColor.opacity(0.85)
+                                : Color.secondary.opacity(0.16)
+                        )
+                )
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+}
+
 /// The live combined EQ response, rendered above the potentiometers -
 /// recomputes from the route's gains on every knob move (the same RBJ
 /// math the engine runs; 96 log-spaced samples, ±14 dB window).

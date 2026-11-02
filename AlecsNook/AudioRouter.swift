@@ -38,8 +38,11 @@ private let routerLog = Logger(
 /// `AudioRouter` is consuming the tap. If the router is not consuming
 /// (no enabled route), the tap runs `.unmuted` and macOS playback is
 /// untouched.
-final class AudioRouter {
+@MainActor
+final class AudioRouter: ObservableObject {
     nonisolated(unsafe) static let shared = AudioRouter()
+
+    nonisolated init() {}
 
     /// Per-output engines, keyed by the Core Audio `AudioDeviceID` of
     /// the target device. Created lazily on first use, torn down when
@@ -54,6 +57,32 @@ final class AudioRouter {
     /// Per-route three-band EQ chains, keyed like the players.
     private var eqsByRoute: [PlayerKey: AVAudioUnitEQ] = [:]
 
+    /// Per-route stereo focus processors (vocal/instrumental mid-side
+    /// processing). Stateful (bass-restore filter history), so one per
+    /// player key, created with the player.
+    private var focusProcessors: [PlayerKey: StereoFocusProcessor] = [:]
+
+    /// Per-source focus mode (keyed by bundle ID). Published for the
+    /// row UI's vocal/instrumental buttons.
+    @Published var focusModes: [String: SourceFocusMode] = [:]
+
+    /// Set a source's focus mode; live-applies to its replay chain.
+    @MainActor
+    func setFocusMode(_ mode: SourceFocusMode, forBundleIdentifier bundleID: String) {
+        focusModes[bundleID] = mode
+        for (key, processor) in focusProcessors
+        where key.bundleIdentifier == bundleID {
+            var updated = processor
+            updated.mode = mode
+            if mode != .instrumental {
+                // Clear the bass-restore lowpass state on mode changes
+                // that don't use it, so a later switch starts clean.
+                updated.reset()
+            }
+            focusProcessors[key] = updated
+        }
+    }
+
     /// Serial dispatch queue used to schedule buffers into engines.
     /// AVAudioEngine is not safe to mutate from arbitrary threads; all
     /// scheduling for a given engine must happen on a single queue.
@@ -67,8 +96,6 @@ final class AudioRouter {
     /// a stream of per-buffer retries cannot hammer the HAL.
     private var lastEngineFailure: [AudioDeviceID: TimeInterval] = [:]
     private let engineRetryInterval: TimeInterval = 2.0
-
-    private init() {}
 
     // MARK: - Audio-thread entry point
 
@@ -142,12 +169,13 @@ final class AudioRouter {
 
     @MainActor
     private func performSchedule(
-        channels: [[Float]],
+        channels inputChannels: [[Float]],
         frameCount: Int,
         route: SourceRoute,
         outputDeviceID: AudioDeviceID,
         sampleRate: Double
     ) {
+        var channels = inputChannels
         // Resolve the *current* device for the route's durable UID -
         // persisted AudioDeviceIDs go stale whenever a device
         // reconnects (AirPods case closed/reopened, coreaudiod restart).
@@ -184,6 +212,19 @@ final class AudioRouter {
             sourceSampleRate: sampleRate,
             sourceChannels: channels.count
         )
+
+        // Focus processing (vocal/instrumental mid-side extraction) runs
+        // on the copied samples before scheduling.
+        let focusKey = PlayerKey(
+            bundleIdentifier: route.bundleIdentifier
+                ?? "audio-object-\(route.sourceObjectID)",
+            outputDeviceID: target.deviceID
+        )
+        if var processor = focusProcessors[focusKey] {
+            processor.mode = focusModes[route.stableKey] ?? .full
+            processor.process(&channels, sampleRate: sampleRate)
+            focusProcessors[focusKey] = processor
+        }
 
         scheduleBuffer(
             channels: channels,
@@ -314,12 +355,13 @@ final class AudioRouter {
         applyGains(of: route, to: eq)
         eqsByRoute[key] = eq
         playersByRoute[key] = player
+        focusProcessors[key] = StereoFocusProcessor(sampleRate: sourceSampleRate)
         return player
     }
 
     /// The three-band filter chain (low shelf / parametric mid /
     /// high shelf) inserted between each route's player and the mixer.
-    static func makeEqualizerChain() -> AVAudioUnitEQ {
+    nonisolated static func makeEqualizerChain() -> AVAudioUnitEQ {
         let eq = AVAudioUnitEQ(numberOfBands: 3)
 
         eq.bands[0].filterType = .lowShelf
@@ -496,6 +538,7 @@ final class AudioRouter {
         }
         playersByRoute.removeAll()
         eqsByRoute.removeAll()
+        focusProcessors.removeAll()
         for (_, engine) in enginesByOutput {
             engine.stop()
         }
