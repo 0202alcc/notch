@@ -188,6 +188,13 @@ final class SourceEqualizerTests: XCTestCase {
         XCTAssertEqual(EQBand.high.frequencyHz, 6000)
     }
 
+    /// Knob labels show the real filter frequencies, kHz-compressed.
+    func testFrequencyLabels() {
+        XCTAssertEqual(EQBand.low.label, "150Hz")
+        XCTAssertEqual(EQBand.mid.label, "1kHz")
+        XCTAssertEqual(EQBand.high.label, "6kHz")
+    }
+
     /// Knob position (0...1) maps linearly to -12...+12 dB, 0.5 = flat.
     func testKnobPositionMapping() {
         XCTAssertEqual(EQBand.db(forKnobPosition: 0.0), -12)

@@ -19,11 +19,11 @@ struct SourceEQKnobs: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            PotKnob(label: "B", db: eqBinding(.low))
-            PotKnob(label: "M", db: eqBinding(.mid))
-            PotKnob(label: "T", db: eqBinding(.high))
+            PotKnob(label: EQBand.low.label, db: eqBinding(.low))
+            PotKnob(label: EQBand.mid.label, db: eqBinding(.mid))
+            PotKnob(label: EQBand.high.label, db: eqBinding(.high))
         }
-        .help("Per-source EQ: lows (B), mids (M), highs (T). Double-tap a knob to flatten it.")
+        .help("Per-source EQ: 150Hz lows, 1kHz mids, 6kHz highs. Double-tap a knob to flatten it.")
     }
 
     private func eqBinding(_ band: EQBand) -> Binding<Double> {
@@ -115,8 +115,9 @@ struct PotKnob: View {
             }
 
             Text(label)
-                .font(.system(size: 7, weight: .semibold))
+                .font(.system(size: 6.5, weight: .semibold))
                 .foregroundStyle(.secondary)
+                .fixedSize()
         }
     }
 }

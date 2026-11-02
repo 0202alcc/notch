@@ -27,6 +27,12 @@ public enum EQBand: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    /// Compact frequency label for the knob (kHz-compressed).
+    public var label: String {
+        let hz = Int(frequencyHz)
+        return hz >= 1000 ? "\(hz / 1000)kHz" : "\(hz)Hz"
+    }
+
     /// The knob's gain range.
     public static let minDB: Double = -12
     public static let maxDB: Double = 12
