@@ -478,6 +478,11 @@ struct AudioSourceRow: View {
                         .help("Volume for \(source.applicationName) on its routed output")
                     }
                     .transition(.opacity)
+
+                    // The three-band EQ potentiometers (lows/mids/highs)
+                    // - shapes only this source's replayed audio.
+                    SourceEQKnobs(bundleID: bundleID)
+                        .transition(.opacity)
                 }
             }
 

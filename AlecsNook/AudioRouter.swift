@@ -51,6 +51,9 @@ final class AudioRouter {
     private var playersByRoute:
         [PlayerKey: AVAudioPlayerNode] = [:]
 
+    /// Per-route three-band EQ chains, keyed like the players.
+    private var eqsByRoute: [PlayerKey: AVAudioUnitEQ] = [:]
+
     /// Serial dispatch queue used to schedule buffers into engines.
     /// AVAudioEngine is not safe to mutate from arbitrary threads; all
     /// scheduling for a given engine must happen on a single queue.
@@ -304,12 +307,53 @@ final class AudioRouter {
 
         let player = AVAudioPlayerNode()
         player.volume = Float(route.volume)
-        engine.attachAndConnect(
+        let eq = engine.attachAndConnect(
             player: player,
             format: format
         )
+        applyGains(of: route, to: eq)
+        eqsByRoute[key] = eq
         playersByRoute[key] = player
         return player
+    }
+
+    /// The three-band filter chain (low shelf / parametric mid /
+    /// high shelf) inserted between each route's player and the mixer.
+    static func makeEqualizerChain() -> AVAudioUnitEQ {
+        let eq = AVAudioUnitEQ(numberOfBands: 3)
+
+        eq.bands[0].filterType = .lowShelf
+        eq.bands[0].frequency = EQBand.low.frequencyHz
+        eq.bands[1].filterType = .parametric
+        eq.bands[1].frequency = EQBand.mid.frequencyHz
+        eq.bands[1].bandwidth = 1.2
+        eq.bands[2].filterType = .highShelf
+        eq.bands[2].frequency = EQBand.high.frequencyHz
+
+        for band in eq.bands {
+            band.bypass = false
+            band.gain = 0
+        }
+        return eq
+    }
+
+    /// Applies a route's EQ gains to its filter chain.
+    private func applyGains(of route: SourceRoute, to eq: AVAudioUnitEQ) {
+        eq.bands[0].gain = Float(route.eqLowDB)
+        eq.bands[1].gain = Float(route.eqMidDB)
+        eq.bands[2].gain = Float(route.eqHighDB)
+    }
+
+    /// Applies each route's persisted EQ gains to its filter chain -
+    /// rides the same route-change subscription as volume.
+    @MainActor
+    func applyEqualizer(_ routes: [String: SourceRoute]) {
+        for (playerKey, eq) in eqsByRoute {
+            guard let route = routes[playerKey.bundleIdentifier] else {
+                continue
+            }
+            applyGains(of: route, to: eq)
+        }
     }
 
     /// Applies each route's persisted volume to its replay player(s).
@@ -424,6 +468,7 @@ final class AudioRouter {
                 continue
             }
             player.stop()
+            eqsByRoute.removeValue(forKey: key)
             if let engine = enginesByOutput[key.outputDeviceID] {
                 engine.detach(player: player)
             }
@@ -450,6 +495,7 @@ final class AudioRouter {
             player.stop()
         }
         playersByRoute.removeAll()
+        eqsByRoute.removeAll()
         for (_, engine) in enginesByOutput {
             engine.stop()
         }
@@ -526,13 +572,16 @@ private final class OutputEngine {
     func attachAndConnect(
         player: AVAudioPlayerNode,
         format: AVAudioFormat
-    ) {
+    ) -> AVAudioUnitEQ {
+        let eq = AudioRouter.makeEqualizerChain()
+
         engine.attach(player)
-        engine.connect(
-            player,
-            to: engine.mainMixerNode,
-            format: format
-        )
+        engine.attach(eq)
+        // player → EQ (low/mid/high) → mixer: the EQ shapes only this
+        // route's replay, never other sources sharing the device.
+        engine.connect(player, to: eq, format: format)
+        engine.connect(eq, to: engine.mainMixerNode, format: format)
+        return eq
     }
 
     func detach(player: AVAudioPlayerNode) {

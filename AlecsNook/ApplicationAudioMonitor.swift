@@ -316,6 +316,7 @@ final class ApplicationAudioMonitor: ObservableObject {
         volumeObserverCancellable = RouteStore.shared.$routes
             .sink { routes in
                 AudioRouter.shared.applyVolumes(routes)
+                AudioRouter.shared.applyEqualizer(routes)
             }
     }
 

@@ -128,30 +128,22 @@ public final class RouteStore: ObservableObject {
     public func upsertRoute(_ route: SourceRoute) {
         let key = route.stableKey
 
-        let resolved: SourceRoute
-        if let existing = routes[key] {
-            resolved = SourceRoute(
-                sourceObjectID: route.sourceObjectID,
-                bundleIdentifier: route.bundleIdentifier,
-                applicationName: route.applicationName,
-                outputDeviceID: route.outputDeviceID
-                    ?? existing.outputDeviceID,
-                outputDeviceUID: route.outputDeviceUID
-                    ?? existing.outputDeviceUID,
-                // A re-discovered source arrives with the default
-                // `enabled: false`; the user's persisted choice wins so
-                // routing survives an app or source restart. Turning a
-                // route off is `setEnabled`'s job, never upsert's.
-                enabled: route.enabled || existing.enabled,
-                // Same for volume: discovery never carries volume
-                // intent, so the persisted choice always wins.
-                volume: existing.volume
-            )
+        if var existing = routes[key] {
+            // A re-discovered source arrives with defaults; the user's
+            // persisted choices win for everything they own (device,
+            // enabled, volume, EQ). Turning a route off is `setEnabled`'s
+            // job, never upsert's.
+            existing.sourceObjectID = route.sourceObjectID
+            existing.outputDeviceID = route.outputDeviceID
+                ?? existing.outputDeviceID
+            existing.outputDeviceUID = route.outputDeviceUID
+                ?? existing.outputDeviceUID
+            existing.enabled = route.enabled || existing.enabled
+            routes[key] = existing
         } else {
-            resolved = route
+            routes[key] = route
         }
 
-        routes[key] = resolved
         publishSnapshot()
         persist()
     }
@@ -167,15 +159,8 @@ public final class RouteStore: ObservableObject {
     ) {
         let key = bundleID
         guard var route = routes[key] else { return }
-        route = SourceRoute(
-            sourceObjectID: route.sourceObjectID,
-            bundleIdentifier: route.bundleIdentifier,
-            applicationName: route.applicationName,
-            outputDeviceID: deviceID,
-            outputDeviceUID: deviceUID ?? route.outputDeviceUID,
-            enabled: route.enabled,
-            volume: route.volume
-        )
+        route.outputDeviceID = deviceID
+        route.outputDeviceUID = deviceUID ?? route.outputDeviceUID
         routes[key] = route
         publishSnapshot()
         persist()
@@ -191,17 +176,9 @@ public final class RouteStore: ObservableObject {
         enabled: Bool
     ) {
         let key = bundleID
-        guard let route = routes[key] else { return }
-        let updated = SourceRoute(
-            sourceObjectID: route.sourceObjectID,
-            bundleIdentifier: route.bundleIdentifier,
-            applicationName: route.applicationName,
-            outputDeviceID: route.outputDeviceID,
-            outputDeviceUID: route.outputDeviceUID,
-            enabled: enabled,
-            volume: route.volume
-        )
-        routes[key] = updated
+        guard var route = routes[key] else { return }
+        route.enabled = enabled
+        routes[key] = route
         publishSnapshot()
         persist()
     }
@@ -225,16 +202,28 @@ public final class RouteStore: ObservableObject {
     ) {
         let key = bundleID
         guard var route = routes[key] else { return }
-        let clamped = min(max(volume, 0), 1)
-        route = SourceRoute(
-            sourceObjectID: route.sourceObjectID,
-            bundleIdentifier: route.bundleIdentifier,
-            applicationName: route.applicationName,
-            outputDeviceID: route.outputDeviceID,
-            outputDeviceUID: route.outputDeviceUID,
-            enabled: route.enabled,
-            volume: clamped
-        )
+        route.volume = min(max(volume, 0), 1)
+        routes[key] = route
+        publishSnapshot()
+        persist()
+    }
+
+    /// Set one EQ band's gain for a route (clamped to the band's
+    /// -12...+12 dB range). Applied live to the route's filter chain.
+    @MainActor
+    public func setEqualizer(
+        forBundleIdentifier bundleID: String,
+        band: EQBand,
+        db: Double
+    ) {
+        let key = bundleID
+        guard var route = routes[key] else { return }
+        let clamped = EQBand.clampDB(db)
+        switch band {
+        case .low: route.eqLowDB = clamped
+        case .mid: route.eqMidDB = clamped
+        case .high: route.eqHighDB = clamped
+        }
         routes[key] = route
         publishSnapshot()
         persist()

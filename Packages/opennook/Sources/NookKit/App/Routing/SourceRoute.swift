@@ -24,7 +24,7 @@ public struct SourceRoute: Codable, Hashable {
     /// at process-launch time — it survives restart of the source app
     /// as long as the OS hasn't recycled the ID, which is good enough
     /// for in-session routing.
-    public let sourceObjectID: AudioObjectID
+    public var sourceObjectID: AudioObjectID
 
     /// Bundle identifier, when known. Persisted alongside the object
     /// ID so a route can survive a source-process restart even if the
@@ -61,6 +61,12 @@ public struct SourceRoute: Codable, Hashable {
     /// per-source volume.
     public var volume: Double
 
+    /// Per-band EQ gains in dB (-12...+12; 0 = flat), applied by the
+    /// replay engine's per-route filter chain.
+    public var eqLowDB: Double
+    public var eqMidDB: Double
+    public var eqHighDB: Double
+
     public init(
         sourceObjectID: AudioObjectID,
         bundleIdentifier: String?,
@@ -68,7 +74,10 @@ public struct SourceRoute: Codable, Hashable {
         outputDeviceID: AudioDeviceID? = nil,
         outputDeviceUID: String? = nil,
         enabled: Bool = false,
-        volume: Double = 1
+        volume: Double = 1,
+        eqLowDB: Double = 0,
+        eqMidDB: Double = 0,
+        eqHighDB: Double = 0
     ) {
         self.sourceObjectID = sourceObjectID
         self.bundleIdentifier = bundleIdentifier
@@ -77,6 +86,9 @@ public struct SourceRoute: Codable, Hashable {
         self.outputDeviceUID = outputDeviceUID
         self.enabled = enabled
         self.volume = volume
+        self.eqLowDB = eqLowDB
+        self.eqMidDB = eqMidDB
+        self.eqHighDB = eqHighDB
     }
 
     // Custom Codable so records written before `outputDeviceUID` / `volume`
@@ -90,6 +102,9 @@ public struct SourceRoute: Codable, Hashable {
         case outputDeviceUID
         case enabled
         case volume
+        case eqLowDB
+        case eqMidDB
+        case eqHighDB
     }
 
     public init(from decoder: Decoder) throws {
@@ -101,6 +116,9 @@ public struct SourceRoute: Codable, Hashable {
         outputDeviceUID = try container.decodeIfPresent(String.self, forKey: .outputDeviceUID)
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
         volume = try container.decodeIfPresent(Double.self, forKey: .volume) ?? 1
+        eqLowDB = try container.decodeIfPresent(Double.self, forKey: .eqLowDB) ?? 0
+        eqMidDB = try container.decodeIfPresent(Double.self, forKey: .eqMidDB) ?? 0
+        eqHighDB = try container.decodeIfPresent(Double.self, forKey: .eqHighDB) ?? 0
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -112,6 +130,9 @@ public struct SourceRoute: Codable, Hashable {
         try container.encodeIfPresent(outputDeviceUID, forKey: .outputDeviceUID)
         try container.encode(enabled, forKey: .enabled)
         try container.encode(volume, forKey: .volume)
+        try container.encode(eqLowDB, forKey: .eqLowDB)
+        try container.encode(eqMidDB, forKey: .eqMidDB)
+        try container.encode(eqHighDB, forKey: .eqHighDB)
     }
 
     /// Stable key used to look up routes in the in-memory map and to
