@@ -39,12 +39,18 @@ struct EQResponseCurveView: View {
             )
 
             Canvas { context, _ in
-                let zeroY = h / 2
-                let dBRange = 28.0 // ±14 dB visible
+                // Geometry: a dedicated label strip below the plot; the
+                // plot area spans exactly ±12 dB, so the graph's bottom
+                // IS the -12 dB line - the columns' baseline aligns
+                // with it exactly.
+                let labelStrip: CGFloat = 11
+                let plotH = h - labelStrip
+                let zeroY = plotH / 2
+                let dBRange = 24.0 // ±12 dB fills the plot
                 let stepX = w / Double(EQResponseCurveMath.sampleCount - 1)
 
                 func yFor(_ db: Double) -> CGFloat {
-                    CGFloat(zeroY - (db / dBRange) * (h / 2))
+                    CGFloat(zeroY - (db / dBRange) * (plotH / 2))
                 }
 
                 // Live spectrum columns (post-EQ energy), drawn first so
@@ -81,10 +87,12 @@ struct EQResponseCurveView: View {
                     let effective = min(Double(magnitude) * responseGain, 1.0)
                     guard effective > 0.015 else { continue }
 
-                    let barHeight = effective * (h - 4)
+                    // Columns rise from the plot's bottom edge (= the
+                    // -12 dB line), aligned with the graph.
+                    let barHeight = effective * plotH
                     let rect = CGRect(
                         x: x - columnWidth / 2,
-                        y: h - barHeight,
+                        y: plotH - barHeight,
                         width: columnWidth,
                         height: barHeight
                     )
