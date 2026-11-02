@@ -719,7 +719,16 @@ public final class AppCoordinator: ObservableObject {
         appState.$appearancePreferences
             .dropFirst()
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.syncNotchBackdrop() }
+            .sink { [weak self] preferences in
+                guard let self else { return }
+                // Project the pin preference onto the surface on EVERY
+                // change - the pill's pin toggles it while compact, and
+                // hover-driven expands never pass through the
+                // coordinator (which only applies the value at
+                // expand-time).
+                self.surface.staysExpandedOnHoverExit = preferences.keepNookOpen
+                self.syncNotchBackdrop()
+            }
             .store(in: &cancellables)
 
         accessibilityObserver = ObserverToken(
