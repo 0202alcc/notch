@@ -63,6 +63,35 @@ struct MicrophoneStatusIcon: View {
     }
 }
 
+/// The compact pill's pin (top-left): toggles the "stay expanded on
+/// hover-exit" preference. Pinned, hovering the pill expands the nook
+/// and it stays open until unpinned - via this button or the expanded
+/// top bar's lock.
+struct CompactPinButton: View {
+    @EnvironmentObject private var appState: AppState
+
+    var body: some View {
+        Button {
+            appState.keepNookOpen.toggle()
+        } label: {
+            Image(systemName: appState.keepNookOpen ? "pin.fill" : "pin")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(
+                    appState.keepNookOpen
+                        ? Color.accentColor
+                        : .white.opacity(0.85)
+                )
+                .frame(width: 16, height: 22)
+        }
+        .buttonStyle(.plain)
+        .help(
+            appState.keepNookOpen
+                ? "Unpin - resume auto-collapse on hover exit"
+                : "Pin - keep the nook expanded while hovered"
+        )
+    }
+}
+
 struct ExpandedMicrophoneStatusIcon: View {
     var body: some View {
         MicrophoneStatusIcon()
@@ -895,7 +924,10 @@ configuration.setHome {
 
 // Collapsed state
 configuration.setCompactLeading {
-    CompactOutputStatusView()
+    HStack(spacing: 4) {
+        CompactPinButton()
+        CompactOutputStatusView()
+    }
 }
 configuration.setCompactTrailing {
     HStack(spacing: 2) {
